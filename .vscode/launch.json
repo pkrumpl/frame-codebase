@@ -11,9 +11,22 @@
             "executable": "build/application.elf",
             "preLaunchTask": "Build",
             "device": "nRF52840_XXAA",
-            "showDevDebugOutput": "none",
+            "showDevDebugOutput": "parsed",
             "svdFile": "libraries/nrfx/mdk/nrf52840.svd",
             "internalConsoleOptions": "neverOpen",
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto",
+                "clearSearch": false,
+                "searchSize": 32768,
+                "decoders": [
+                    {
+                        "port": 0,
+                        "type": "console",
+                        "label": "RTT Console"
+                    }
+                ]
+            },
             "loadFiles": [
                 "libraries/softdevice/s140_nrf52_7.3.0_softdevice.hex",
             ],
@@ -21,6 +34,9 @@
                 "monitor halt",
                 "monitor speed 2000",
                 "load"
+            ],
+            "postLaunchCommands": [
+                "monitor reset"
             ]
         },
         {
