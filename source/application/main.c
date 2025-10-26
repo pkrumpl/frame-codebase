@@ -45,6 +45,9 @@
 #include "spi.h"
 #include "watchdog.h"
 
+// TODO: remove test
+#include "cpp_example.h"
+
 bool not_real_hardware = false;
 bool stay_awake = false;
 
@@ -220,12 +223,17 @@ static void hardware_setup()
         spi_configure();
     }
 
+    // TODO: remove before flashing onto frame!!
+    {
+        not_real_hardware = true;
+    }
+
     // Scan the PMIC & IMU for their chip IDs. Camera is checked later
     {
         i2c_response_t magnetometer_id = i2c_read(MAGNETOMETER, 0x0F, 0xFF);
         i2c_response_t pmic_id = i2c_read(PMIC, 0x14, 0x0F);
 
-        if (magnetometer_id.fail && pmic_id.fail)
+        if ((magnetometer_id.fail && pmic_id.fail) || not_real_hardware)
         {
             LOG("Running on fake hardware");
             not_real_hardware = true;
@@ -466,6 +474,15 @@ static void hardware_setup()
 int main(void)
 {
     LOG("Frame firmware " BUILD_VERSION " (" GIT_COMMIT ")");
+
+    // Test C++ integration
+    LOG("Testing C++ integration...");
+    LOG("Initial counter: %d", cpp_example_get_counter());
+    cpp_example_increment();
+    cpp_example_increment();
+    LOG("After increment: %d", cpp_example_get_counter());
+    LOG("Add test: 5 + 3 = %d", cpp_example_add(5, 3));
+    LOG("C++ integration test complete");
 
     hardware_setup();
 

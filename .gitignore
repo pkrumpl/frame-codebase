@@ -1,6 +1,9 @@
 # Ignore build files
 build/
 
+# Ignore object files
+*.o
+
 # Ignore simulation files
 simulation/
 abc.history

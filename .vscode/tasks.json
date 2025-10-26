@@ -24,6 +24,21 @@
             },
         },
         {
+            "label": "Build and Show Size",
+            "type": "shell",
+            "command": "make -C source/application && make -C source/application size-report",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "group": "build"
+        },
+        {
             "label": "Build Bootloader",
             "type": "shell",
             "command": "make bootloader",

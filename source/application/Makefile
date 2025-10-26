@@ -28,7 +28,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD)
 LIBRARIES := ../../libraries
 BUILD := ../../build
 
-# Source files
+# C source files
 C_FILES += \
 	main.c \
 	bluetooth.c \
@@ -98,8 +98,13 @@ C_FILES += \
 	$(LIBRARIES)/nrfx/mdk/system_nrf52840.c \
 	$(LIBRARIES)/segger/SEGGER_RTT.c \
 
+# C++ source files (add your C++ files here)
+CPP_FILES += \
+	$(LIBRARIES)/cpp_example/cpp_example.cpp \
+	# Add more C++ files here
+
 # Header file paths
-FLAGS += \
+INCLUDE_FLAGS += \
 	-I. \
 	-I.. \
 	-I../fpga \
@@ -117,15 +122,13 @@ FLAGS += \
 	-I$(LIBRARIES)/picolibc \
 	-I$(LIBRARIES)/segger \
 	-I$(LIBRARIES)/softdevice/include \
+	-I$(LIBRARIES)/cpp_example \
 
-# Warnings
-FLAGS += \
+# Common flags for both C and C++
+COMMON_FLAGS += \
 	-Wall \
 	-Wdouble-promotion  \
 	-Wfloat-conversion \
-
-# Build options and optimizations
-FLAGS += \
 	-falign-functions=16 \
 	-fdata-sections  \
 	-ffunction-sections  \
@@ -140,10 +143,6 @@ FLAGS += \
 	-mthumb \
 	-nostdlib \
 	-O2 \
-	-std=gnu17 \
-
-# Preprocessor defines
-FLAGS += \
 	-DBUILD_VERSION='"$(BUILD_VERSION)"' \
 	-DGIT_COMMIT='"$(GIT_COMMIT)"' \
 	-DLFS_NO_DEBUG \
@@ -151,13 +150,22 @@ FLAGS += \
 	-DLFS_NO_WARN \
 	-DNDEBUG \
 	-DNRF52840_XXAA \
+	$(INCLUDE_FLAGS)
 
-# Linker options
-FLAGS += \
+# C-specific flags
+CFLAGS := $(COMMON_FLAGS) -std=gnu17
+
+# C++-specific flags
+CXXFLAGS := $(COMMON_FLAGS) \
+	-std=c++11 \
+	-fno-rtti \
+	-fno-exceptions \
+	-fno-threadsafe-statics \
+	-fno-use-cxa-atexit
+
+# Linker flags
+LDFLAGS := \
 	-Wl,--gc-sections \
-
-# Linker script paths
-FLAGS += \
 	-T ../memory_layout.ld \
 	-T section_layout.ld \
 	-L$(LIBRARIES)/picolibc \
@@ -166,11 +174,62 @@ FLAGS += \
 LINKED_LIBRARIES += \
 	-lc \
 	-lgcc \
+	-lstdc++ \
+	-lm
 
-$(BUILD)/application.hex: $(C_FILES) ../fpga/fpga_application.h
-	@echo Building application...
-	@mkdir -p $(BUILD)
-	@arm-none-eabi-gcc $(FLAGS) -o $(BUILD)/application.elf $(C_FILES) $(LINKED_LIBRARIES)
-	@arm-none-eabi-objcopy -O ihex $(BUILD)/application.elf $(BUILD)/application.hex
-	@arm-none-eabi-size $(BUILD)/application.elf
-	@echo Application built
+# Generate object file lists using notdir to flatten paths, then add BUILD/obj prefix
+C_OBJECTS := $(addprefix $(BUILD)/obj/,$(notdir $(C_FILES:.c=.o)))
+CPP_OBJECTS := $(addprefix $(BUILD)/obj/,$(notdir $(CPP_FILES:.cpp=.o)))
+ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS)
+
+# VPATH tells Make where to find source files
+VPATH := . .. lua_libraries \
+         $(LIBRARIES)/littlefs \
+         $(LIBRARIES)/lua \
+         $(LIBRARIES)/lz4 \
+         $(LIBRARIES)/nrfx/drivers/src \
+         $(LIBRARIES)/nrfx/helpers \
+         $(LIBRARIES)/nrfx/mdk \
+         $(LIBRARIES)/segger \
+         $(LIBRARIES)/cpp_example
+
+# Default target
+all: $(BUILD)/application.hex
+
+# Compile C files
+$(BUILD)/obj/%.o: %.c
+	@mkdir -p $(dir $@)
+	@echo "  CC    $<"
+	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
+
+# Compile C++ files
+$(BUILD)/obj/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+# Link everything
+$(BUILD)/application.elf: $(ALL_OBJECTS)
+	@echo "  LINK  $@"
+	@arm-none-eabi-g++ $(COMMON_FLAGS) $(LDFLAGS) -o $@ $^ $(LINKED_LIBRARIES)
+
+# Convert to HEX
+$(BUILD)/application.hex: $(BUILD)/application.elf
+	@echo "  HEX   $@"
+	@arm-none-eabi-objcopy -O ihex $< $@
+	@echo "Build complete:"
+	@arm-none-eabi-size $<
+
+# Show detailed size report with remaining memory
+size-report: $(BUILD)/application.elf
+	@echo ""
+	@echo "====== MEMORY USAGE REPORT ======"
+	@arm-none-eabi-size $(BUILD)/application.elf | awk 'NR==1 {print; next} {text=$$1; data=$$2; bss=$$3; flash_used=(text+data)/1024; ram_used=(data+bss)/1024; flash_total=824; ram_total=245; flash_remain=flash_total-flash_used; ram_remain=ram_total-ram_used; flash_pct=flash_used/flash_total*100; ram_pct=ram_used/ram_total*100; printf "\nFLASH:\n  Used:      %.2f KB (%.1f%%)\n  Remaining: %.2f KB\n  Total:     %d KB\n\nRAM:\n  Used:      %.2f KB (%.1f%%)\n  Remaining: %.2f KB\n  Total:     %d KB\n\n====== SECTION SIZES ======\n  .text: %.2f KB (code)\n  .data: %.2f KB (initialized data)\n  .bss:  %.2f KB (uninitialized data)\n", flash_used, flash_pct, flash_remain, flash_total, ram_used, ram_pct, ram_remain, ram_total, text/1024, data/1024, bss/1024}'
+	@echo ""
+
+# Clean
+clean:
+	@rm -rf $(BUILD)/obj
+	@rm -f $(BUILD)/application.elf $(BUILD)/application.hex
+
+.PHONY: all clean size-report
