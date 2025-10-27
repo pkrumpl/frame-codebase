@@ -27,6 +27,10 @@
 #include <stdbool.h>
 #include "lua.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern lua_State *L_global;
 
 void lua_bluetooth_data_interrupt(uint8_t *data, size_t length);
@@ -44,3 +48,7 @@ void lua_open_version_library(lua_State *L);
 
 void lua_open_file_library(lua_State *L, bool reformat);
 void lua_close_file_library(void);
+
+#ifdef __cplusplus
+}
+#endif
