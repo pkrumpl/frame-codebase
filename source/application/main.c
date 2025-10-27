@@ -47,6 +47,7 @@
 
 // TODO: remove test
 #include "cpp_example.h"
+#include "tflm_wrapper.h"
 
 bool not_real_hardware = false;
 bool stay_awake = false;
@@ -475,14 +476,14 @@ int main(void)
 {
     LOG("Frame firmware " BUILD_VERSION " (" GIT_COMMIT ")");
 
-    // Test C++ integration
-    LOG("Testing C++ integration...");
-    LOG("Initial counter: %d", cpp_example_get_counter());
-    cpp_example_increment();
-    cpp_example_increment();
-    LOG("After increment: %d", cpp_example_get_counter());
-    LOG("Add test: 5 + 3 = %d", cpp_example_add(5, 3));
-    LOG("C++ integration test complete");
+    // Test TFLM hello_world example
+    LOG("Running TFLM hello_world tests...");
+    tflm_status_t tflm_result = tflm_run_all_tests();
+    if (tflm_result == TFLM_OK) {
+        LOG("TFLM tests completed successfully!");
+    } else {
+        LOG("TFLM tests failed!");
+    }
 
     hardware_setup();
 

@@ -28,18 +28,24 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD)
 LIBRARIES := ../../libraries
 BUILD := ../../build
 
+# Check ARM GCC toolchain version (require 12.3.1)
+# https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+GCC_VERSION := $(shell arm-none-eabi-gcc -dumpfullversion -dumpversion)
+REQUIRED_GCC_VERSION := 12.3.1
+
+ifneq ($(GCC_VERSION),$(REQUIRED_GCC_VERSION))
+    $(error ERROR: ARM GNU Toolchain version $(REQUIRED_GCC_VERSION) is required. Found version $(GCC_VERSION). This build is only tested with version $(REQUIRED_GCC_VERSION).x)
+endif
+
 # C source files
+# Note: bluetooth.c and compression.c are handled with explicit rules to avoid naming conflicts
 C_FILES += \
 	main.c \
-	bluetooth.c \
-	compression.c \
 	flash.c \
 	luaport.c \
 	spi.c \
 	watchdog.c \
-	lua_libraries/bluetooth.c \
 	lua_libraries/camera.c \
-	lua_libraries/compression.c \
 	lua_libraries/display.c \
 	lua_libraries/file.c \
 	lua_libraries/imu.c \
@@ -99,12 +105,49 @@ C_FILES += \
 	$(LIBRARIES)/segger/SEGGER_RTT.c \
 
 # C++ source files (add your C++ files here)
+# Note: common.cc files are handled with explicit rules to avoid naming conflicts
 CPP_FILES += \
 	$(LIBRARIES)/cpp_example/cpp_example.cpp \
-	# Add more C++ files here
+	tflm_wrapper.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/core/api/flatbuffer_conversions.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/core/api/tensor_utils.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_interpreter.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_allocator.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_interpreter_graph.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_log.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_resource_variable.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_profiler.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_time.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_utils.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_helpers.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_op_resolver.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_context.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_interpreter_context.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/flatbuffer_utils.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/recording_micro_allocator.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/fake_micro_context.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/system_setup.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/debug_log.cc \
+	$(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/schema/schema_utils.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/micro_error_reporter.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/quantization_util.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/portable_tensor_utils.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/persistent_arena_buffer_allocator.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/non_persistent_arena_buffer_allocator.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/greedy_memory_planner.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_allocation_info.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/kernels/kernel_util.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.cc
 
-# Header file paths
-INCLUDE_FLAGS += \
+# Common header file paths (used by both C and C++)
+COMMON_INCLUDE_FLAGS := \
 	-I. \
 	-I.. \
 	-I../fpga \
@@ -119,10 +162,17 @@ INCLUDE_FLAGS += \
 	-I$(LIBRARIES)/nrfx/hal \
 	-I$(LIBRARIES)/nrfx/mdk \
 	-I$(LIBRARIES)/nrfx/soc \
-	-I$(LIBRARIES)/picolibc \
 	-I$(LIBRARIES)/segger \
 	-I$(LIBRARIES)/softdevice/include \
 	-I$(LIBRARIES)/cpp_example \
+	-I$(LIBRARIES)/tflm \
+	-I$(LIBRARIES)/tflm/third_party/flatbuffers/include \
+	-I$(LIBRARIES)/tflm/third_party/gemmlowp \
+	-I$(LIBRARIES)/tflm/third_party/ruy
+
+# C-only header paths (excluded from C++ to avoid conflicts)
+C_ONLY_INCLUDE_FLAGS := \
+	-I$(LIBRARIES)/picolibc
 
 # Common flags for both C and C++
 COMMON_FLAGS += \
@@ -149,19 +199,26 @@ COMMON_FLAGS += \
 	-DLFS_NO_ERROR \
 	-DLFS_NO_WARN \
 	-DNDEBUG \
-	-DNRF52840_XXAA \
-	$(INCLUDE_FLAGS)
+	-DNRF52840_XXAA
 
-# C-specific flags
-CFLAGS := $(COMMON_FLAGS) -std=gnu17
+# C-specific flags (includes local picolibc)
+CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) -std=gnu17
 
-# C++-specific flags
-CXXFLAGS := $(COMMON_FLAGS) \
-	-std=c++11 \
+# C++-specific flags (excludes local picolibc to avoid header conflicts)
+CXXFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) \
+	-std=gnu++14 \
 	-fno-rtti \
 	-fno-exceptions \
 	-fno-threadsafe-statics \
-	-fno-use-cxa-atexit
+	-fno-use-cxa-atexit \
+	-DTF_LITE_STATIC_MEMORY \
+	-DTF_LITE_DISABLE_X86_NEON \
+	-DTF_LITE_STRIP_ERROR_STRINGS \
+	-D_READ_WRITE_RETURN_TYPE=_ssize_t \
+	-D_READ_WRITE_BUFSIZE_TYPE=int \
+	-D_Thread_local=thread_local \
+	-D__malloc_like= \
+	-D__result_use_check=
 
 # Linker flags
 LDFLAGS := \
@@ -179,8 +236,17 @@ LINKED_LIBRARIES += \
 
 # Generate object file lists using notdir to flatten paths, then add BUILD/obj prefix
 C_OBJECTS := $(addprefix $(BUILD)/obj/,$(notdir $(C_FILES:.c=.o)))
-CPP_OBJECTS := $(addprefix $(BUILD)/obj/,$(notdir $(CPP_FILES:.cpp=.o)))
-ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS)
+# Handle both .cpp and .cc files
+CPP_CPP_FILES := $(filter %.cpp,$(CPP_FILES))
+CPP_CC_FILES := $(filter %.cc,$(CPP_FILES))
+CPP_OBJECTS := $(addprefix $(BUILD)/obj/,$(notdir $(CPP_CPP_FILES:.cpp=.o))) \
+               $(addprefix $(BUILD)/obj/,$(notdir $(CPP_CC_FILES:.cc=.o)))
+# Add explicit object files for conflicting names
+EXPLICIT_OBJECTS := $(BUILD)/obj/common_core.o $(BUILD)/obj/common_kernels.o \
+                    $(BUILD)/obj/kernel_util_kernels.o \
+                    $(BUILD)/obj/bluetooth_app.o $(BUILD)/obj/bluetooth_lua.o \
+                    $(BUILD)/obj/compression_app.o $(BUILD)/obj/compression_lua.o
+ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS) $(EXPLICIT_OBJECTS)
 
 # VPATH tells Make where to find source files
 VPATH := . .. lua_libraries \
@@ -191,10 +257,57 @@ VPATH := . .. lua_libraries \
          $(LIBRARIES)/nrfx/helpers \
          $(LIBRARIES)/nrfx/mdk \
          $(LIBRARIES)/segger \
-         $(LIBRARIES)/cpp_example
+         $(LIBRARIES)/cpp_example \
+         $(LIBRARIES)/tflm/tensorflow/lite/core/c \
+         $(LIBRARIES)/tflm/tensorflow/lite/core/api \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge \
+         $(LIBRARIES)/tflm/tensorflow/lite/kernels \
+         $(LIBRARIES)/tflm/tensorflow/lite/kernels/internal \
+         $(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/schema \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models
 
 # Default target
 all: $(BUILD)/application.hex
+
+# Explicit rules for conflicting filenames
+$(BUILD)/obj/common_core.o: $(LIBRARIES)/tflm/tensorflow/lite/core/c/common.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/common_kernels.o: $(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/common.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/kernel_util_kernels.o: $(LIBRARIES)/tflm/tensorflow/lite/kernels/kernel_util.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/bluetooth_app.o: bluetooth.c
+	@mkdir -p $(dir $@)
+	@echo "  CC    $<"
+	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
+
+$(BUILD)/obj/bluetooth_lua.o: lua_libraries/bluetooth.c
+	@mkdir -p $(dir $@)
+	@echo "  CC    $<"
+	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
+
+$(BUILD)/obj/compression_app.o: compression.c
+	@mkdir -p $(dir $@)
+	@echo "  CC    $<"
+	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
+
+$(BUILD)/obj/compression_lua.o: lua_libraries/compression.c
+	@mkdir -p $(dir $@)
+	@echo "  CC    $<"
+	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
 
 # Compile C files
 $(BUILD)/obj/%.o: %.c
@@ -202,8 +315,14 @@ $(BUILD)/obj/%.o: %.c
 	@echo "  CC    $<"
 	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
 
-# Compile C++ files
+# Compile C++ files (.cpp)
 $(BUILD)/obj/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+# Compile C++ files (.cc)
+$(BUILD)/obj/%.o: %.cc
 	@mkdir -p $(dir $@)
 	@echo "  CXX   $<"
 	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@

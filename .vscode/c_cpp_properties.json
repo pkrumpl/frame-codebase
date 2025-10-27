@@ -21,6 +21,11 @@
                 "libraries/segger",
                 "libraries/softdevice/include",
                 "libraries/softdevice/include/nrf52",
+                "libraries/tflm",
+                "libraries/tflm/third_party/flatbuffers/include",
+                "libraries/tflm/third_party/gemmlowp",
+                "libraries/tflm/third_party/kissfft",
+                "libraries/tflm/third_party/ruy",
                 "source",
                 "source/application",
                 "source/application/lua_libraries",
@@ -43,6 +48,16 @@
                 "SOFTDEVICE_PRESENT",
                 "TEST_FREQUENCY=80",
                 "TEST_POWER=8",
+                // TensorFlow Lite Micro defines
+                "TF_LITE_STATIC_MEMORY",
+                "TF_LITE_DISABLE_X86_NEON",
+                "TF_LITE_STRIP_ERROR_STRINGS",
+                // Picolibc compatibility defines for TFLM
+                "_READ_WRITE_RETURN_TYPE=_ssize_t",
+                "_READ_WRITE_BUFSIZE_TYPE=int",
+                "_Thread_local=thread_local",
+                "__malloc_like=",
+                "__result_use_check=",
             ]
         }
     ],
