@@ -31,9 +31,6 @@ void enter_dfu_mode()
 
     // Reset the device - bootloader will see the DFU flag and enter DFU mode
     NVIC_SystemReset();
-
-    // Should never reach here
-    return 0;
 }
 
 int boot_safety_init(void)
@@ -76,7 +73,7 @@ int boot_safety_init(void)
     // Save the incremented boot counter
     NRF_POWER->GPREGRET2 = (NRF_POWER->GPREGRET2 & ~GPREGRET_BOOT_COUNTER_MASK) | ((boot_counter & 0xFF) << GPREGRET_BOOT_COUNTER_SHIFT);
 
-    LOG("Boot attempt %d/%d", boot_counter, MAX_BOOT_ATTEMPTS);
+    LOG("Boot attempt %lu/%d", boot_counter, MAX_BOOT_ATTEMPTS);
 
     return 0;
 }

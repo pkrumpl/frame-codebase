@@ -18,6 +18,11 @@
 #define MAX_BOOT_ATTEMPTS 10
 
 /*
+ * Enter emergency DFU mode by setting the DFU flag and resetting the device via soft reset.
+ */
+void enter_dfu_mode(void);
+
+/*
  * Initialize boot safety mechanism.
  *
  * This function should be called early in main() after SoftDevice initialization.
@@ -35,10 +40,5 @@ int boot_safety_init(void);
  * Clear the boot counter after successful operation.
  */
 void boot_safety_clear_counter(void);
-
-/*
- * Enter emergency DFU mode by setting the DFU flag and resetting the device via soft reset.
- */
-void enter_dfu_mode(void);
 
 #endif // BOOT_SAFETY_H
