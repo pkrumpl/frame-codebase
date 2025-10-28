@@ -111,7 +111,6 @@ C_FILES += \
 # C++ source files (add your C++ files here)
 # Note: common.cc files are handled with explicit rules to avoid naming conflicts
 CPP_FILES += \
-	$(LIBRARIES)/cpp_example/cpp_example.cpp \
 	tflm_wrapper.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/core/api/flatbuffer_conversions.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/core/api/tensor_utils.cc \
@@ -168,7 +167,6 @@ COMMON_INCLUDE_FLAGS := \
 	-I$(LIBRARIES)/nrfx/soc \
 	-I$(LIBRARIES)/segger \
 	-I$(LIBRARIES)/softdevice/include \
-	-I$(LIBRARIES)/cpp_example \
 	-I$(LIBRARIES)/tflm \
 	-I$(LIBRARIES)/tflm/third_party/flatbuffers/include \
 	-I$(LIBRARIES)/tflm/third_party/gemmlowp \

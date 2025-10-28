@@ -6,8 +6,6 @@
             "cppStandard": "gnu++14",
             "includePath": [
                 "libraries/cmsis/CMSIS/Core/Include",
-                /* TODO: remove */
-                "libraries/cpp_example",
                 "libraries/littlefs",
                 "libraries/lua",
                 "libraries/lz4",

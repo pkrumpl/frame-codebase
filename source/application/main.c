@@ -45,9 +45,7 @@
 #include "pinout.h"
 #include "spi.h"
 #include "watchdog.h"
-
-// TODO: remove test
-#include "cpp_example.h"
+// TF Lite Micro
 #include "tflm_wrapper.h"
 
 bool not_real_hardware = false;
