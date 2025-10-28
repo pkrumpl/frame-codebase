@@ -41,6 +41,7 @@ endif
 # Note: bluetooth.c and compression.c are handled with explicit rules to avoid naming conflicts
 C_FILES += \
 	main.c \
+	boot_safety.c \
 	flash.c \
 	luaport.c \
 	spi.c \

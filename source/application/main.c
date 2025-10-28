@@ -26,6 +26,7 @@
 #include <math.h>
 #include <stdint.h>
 #include "bluetooth.h"
+#include "boot_safety.h"
 #include "camera_configuration.h"
 #include "compression.h"
 #include "display_configuration.h"
@@ -475,6 +476,9 @@ static void hardware_setup()
 int main(void)
 {
     LOG("Frame firmware " BUILD_VERSION " (" GIT_COMMIT ")");
+
+    // TODO: after debugging and development, remove boot safety
+    boot_safety_init();
 
     // Test TFLM hello_world example
     LOG("Running TFLM hello_world tests...");
