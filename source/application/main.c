@@ -225,10 +225,10 @@ static void hardware_setup()
         spi_configure();
     }
 
-    // TODO: remove before flashing onto frame!!
-    {
-        not_real_hardware = true;
-    }
+    // Check if on development kit
+    #ifdef DEV_KIT_BUILD
+      not_real_hardware = true;
+    #endif
 
     // Scan the PMIC & IMU for their chip IDs. Camera is checked later
     {

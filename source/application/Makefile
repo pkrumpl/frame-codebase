@@ -25,6 +25,9 @@
 BUILD_VERSION ?= $(shell TZ= date +v%y.%j.%H%M)
 GIT_COMMIT := $(shell git rev-parse --short HEAD)
 
+$(info BUILD_VERSION is $(BUILD_VERSION))
+$(info GIT_COMMIT is $(GIT_COMMIT))
+
 LIBRARIES := ../../libraries
 BUILD := ../../build
 
@@ -201,6 +204,12 @@ COMMON_FLAGS += \
 	-DLFS_NO_WARN \
 	-DNDEBUG \
 	-DNRF52840_XXAA
+
+# Check if build is for development kit and include flag if necessary
+ifdef DEV_KIT
+$(info Including DEV_KIT_BUILD flag for Development Kit build...)
+COMMON_FLAGS += -DDEV_KIT_BUILD
+endif
 
 # C-specific flags (includes local picolibc)
 CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) -std=gnu17

@@ -58,6 +58,8 @@
                 "_Thread_local=thread_local",
                 "__malloc_like=",
                 "__result_use_check=",
+                // Dev Kit build flag
+                "DEV_KIT_BUILD=1",
             ]
         }
     ],

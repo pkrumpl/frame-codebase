@@ -24,9 +24,29 @@
             },
         },
         {
-            "label": "Build and Show Size",
+            "label": "Build (Development Kit)",
             "type": "shell",
-            "command": "make -C source/application && make -C source/application size-report",
+            "command": "make DEV_KIT=1",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+        },
+        {
+            "label": "Size Report",
+            "type": "shell",
+            "command": "make -C source/application size-report",
             "problemMatcher": ["$gcc"],
             "presentation": {
                 "echo": false,
@@ -58,6 +78,22 @@
             "label": "Release",
             "type": "shell",
             "command": "make release",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
+            "label": "Release (Development Kit)",
+            "type": "shell",
+            "command": "make release DEV_KIT=1",
             "problemMatcher": [
                 "$gcc"
             ],

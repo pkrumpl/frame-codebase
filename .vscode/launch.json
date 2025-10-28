@@ -3,6 +3,43 @@
     // https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug
     "configurations": [
         {
+            "name": "Application (J-Link) - Development-Kit",
+            "type": "cortex-debug",
+            "servertype": "jlink",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "build/application.elf",
+            "preLaunchTask": "Build (Development Kit)",
+            "device": "nRF52840_XXAA",
+            "showDevDebugOutput": "parsed",
+            "svdFile": "libraries/nrfx/mdk/nrf52840.svd",
+            "internalConsoleOptions": "neverOpen",
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto",
+                "clearSearch": false,
+                "searchSize": 32768,
+                "decoders": [
+                    {
+                        "port": 0,
+                        "type": "console",
+                        "label": "RTT Console"
+                    }
+                ]
+            },
+            "loadFiles": [
+                "libraries/softdevice/s140_nrf52_7.3.0_softdevice.hex",
+            ],
+            "preLaunchCommands": [
+                "monitor halt",
+                "monitor speed 2000",
+                "load"
+            ],
+            "postLaunchCommands": [
+                "monitor reset"
+            ]
+        },
+        {
             "name": "Application (J-Link)",
             "type": "cortex-debug",
             "servertype": "jlink",
