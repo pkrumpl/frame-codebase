@@ -1,6 +1,15 @@
-# Frame Firmware & RTL Codebase
+# Brilliant Labs Frame Firmware X TensorFlow Lite for Microcontrollers
 
-Welcome to the complete codebase of the Frame hardware. For regular usage, check out the docs [here](https://docs.brilliant.xyz).
+![Header image (Brilliant Labs X TensorFlow Lite for Microcontrollers)](/docs/img/BrilliantLabs_TFLite.png)
+
+This project builds upon the open-source [Frame smart glasses](https://docs.brilliant.xyz/frame/frame/) by **Brilliant Labs**.  
+Its goal is to integrate [TensorFlow Lite for Microcontrollers (TFLM)](https://github.com/tensorflow/tflite-micro) directly into the glasses’ firmware.  
+
+By embedding TFLM into the firmware itself, the glasses can **run lightweight machine learning models locally**, without needing a connected host device.  
+This approach improves **reliability**, enables **real-time inference**, and reduces **latency** for ML-driven applications such as gesture recognition, sensor fusion, or low-power computer vision.
+
+This project is **experimental** and intended for developers exploring how TFLite Micro can be deployed directly on the Frame hardware.  
+If you’re looking for the standard firmware or general documentation, please visit the official Brilliant Labs [documentation](https://docs.brilliant.xyz).
 
 ## System architecture
 
