@@ -43,9 +43,85 @@ TfLiteStatus RegisterOps(HelloWorldOpResolver& op_resolver) {
   TF_LITE_ENSURE_STATUS(op_resolver.AddFullyConnected());
   return kTfLiteOk;
 }
+
+// Persistent storage for the model interpreter
+constexpr int kTensorArenaSize = 3000;
+uint8_t tensor_arena[kTensorArenaSize];
+tflite::MicroInterpreter* interpreter = nullptr;
+HelloWorldOpResolver* op_resolver = nullptr;
+
 }  // namespace
 
 extern "C" {
+
+/**
+ * Initialize the TFLM model once
+ * Must be called before tflm_infer()
+ */
+tflm_status_t tflm_initialize(void) {
+  MicroPrintf("Initializing TFLM hello_world model...");
+
+  tflite::InitializeTarget();
+
+  const tflite::Model* model =
+      ::tflite::GetModel(hello_world_float_model_data);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    MicroPrintf("Model schema version mismatch!");
+    return TFLM_ERROR;
+  }
+
+  // Create op resolver (this needs to persist)
+  static HelloWorldOpResolver static_op_resolver;
+  op_resolver = &static_op_resolver;
+
+  TfLiteStatus status = RegisterOps(*op_resolver);
+  if (status != kTfLiteOk) {
+    MicroPrintf("Failed to register ops");
+    return TFLM_ERROR;
+  }
+
+  // Create interpreter
+  static tflite::MicroInterpreter static_interpreter(
+      model, *op_resolver, tensor_arena, kTensorArenaSize);
+  interpreter = &static_interpreter;
+
+  status = interpreter->AllocateTensors();
+  if (status != kTfLiteOk) {
+    MicroPrintf("AllocateTensors failed");
+    return TFLM_ERROR;
+  }
+
+  MicroPrintf("TFLM model initialized successfully!");
+  return TFLM_OK;
+}
+
+/**
+ * Run inference on a single input value
+ * @param input Input value (angle in radians, typically 0 to 2*PI)
+ * @param output Pointer to store the predicted output (sine value)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_infer(float input, float* output) {
+  if (interpreter == nullptr) {
+    MicroPrintf("ERROR: Model not initialized. Call tflm_initialize() first!");
+    return TFLM_ERROR;
+  }
+
+  // Set input
+  interpreter->input(0)->data.f[0] = input;
+
+  // Run inference
+  TfLiteStatus status = interpreter->Invoke();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Invoke failed for input %.3f", (double)input);
+    return TFLM_ERROR;
+  }
+
+  // Get output
+  *output = interpreter->output(0)->data.f[0];
+
+  return TFLM_OK;
+}
 
 // Simplified version without profiling/recording to avoid linking issues
 tflm_status_t tflm_profile_memory_and_latency(void) {

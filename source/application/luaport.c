@@ -23,6 +23,7 @@
  */
 
 #include <string.h>
+#include <math.h>
 #include "bluetooth.h"
 #include "error_logging.h"
 #include "frame_lua_libraries.h"
@@ -32,6 +33,7 @@
 #include "nrf_soc.h"
 #include "nrfx_log.h"
 #include "watchdog.h"
+#include "tflm_wrapper.h"
 
 lua_State *L_global = NULL;
 
@@ -101,6 +103,23 @@ int show_pairing_screen(bool is_paired, bool is_update)
         error();
     }
     return status;
+}
+
+// Generate a random float value between 0 and 2*PI
+float generate_random_test_value()
+{
+    uint8_t random_bytes[4];
+    uint32_t retval = sd_rand_application_vector_get(random_bytes, 4);
+    if (retval == NRF_SUCCESS) {
+        // Convert 4 bytes to uint32_t
+        uint32_t random_value = (random_bytes[0] << 24) | (random_bytes[1] << 16) |
+                                (random_bytes[2] << 8) | random_bytes[3];
+        // Scale to 0.0 to 2*PI (approximately 6.28)
+        return ((float)random_value / (float)UINT32_MAX) * (2.0f * M_PI);
+    } else {
+        // Fallback to a default value if RNG fails
+        return 1.23f;
+    }
 }
 
 void run_lua(bool is_paired)
@@ -199,7 +218,38 @@ void run_lua(bool is_paired)
         }
         else
         {
-            int status = luaL_dostring(L, "frame.sleep(0.01)");
+            // Print TF Lite Hello World Model prediction if there is no command currently being executed
+            float input = generate_random_test_value();
+            float predicted_output = 0.0f;
+            float actual_sin = 0.0f;
+            float error = 0.0f;
+
+            tflm_status_t result = tflm_infer(input, &predicted_output);
+            if (result == TFLM_OK) {
+                actual_sin = sinf(input);
+                error = fabsf(actual_sin - predicted_output);
+                LOG("Input: %.2f  Predicted: %.4f  Actual sin(): %.4f  Error: %.4f",
+                    (double)input, (double)predicted_output, (double)actual_sin, (double)error);
+            } else {
+                LOG("ERROR: Inference failed for input %.2f", (double)input);
+            }
+
+            char lua_script[512];
+            snprintf(lua_script, sizeof(lua_script),
+                "frame.display.text('TF Lite Micro', 200, 100);"
+                "frame.display.text('Predict sin()', 200, 140);"
+                "frame.display.text('Input: %.2f', 200, 180, { color = 'SEABLUE' });"
+                "frame.display.text('Predicted: %.2f', 200, 220, { color = 'ORANGE' });"
+                "frame.display.text('Actual: %.2f', 200, 260, { color = 'GREEN' });"
+                "frame.display.text('Error: %.2f', 200, 300, { color = 'RED' });"
+                "frame.display.show();", input, predicted_output, actual_sin, error);
+            int status = luaL_dostring(L, lua_script);
+            if (status != LUA_OK)
+            {
+                lua_pop(L, -1);
+            }
+
+            status = luaL_dostring(L, "frame.sleep(1)");
             if (status != LUA_OK)
             {
                 lua_pop(L, -1);

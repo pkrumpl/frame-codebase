@@ -19,6 +19,20 @@ typedef enum {
 } tflm_status_t;
 
 /**
+ * Initialize the TFLM model (must be called once before inference)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_initialize(void);
+
+/**
+ * Run inference on a single input value
+ * @param input Input value (angle in radians, typically 0 to 2*PI)
+ * @param output Pointer to store the predicted output (sine value)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_infer(float input, float* output);
+
+/**
  * Run the TFLM hello_world example which profiles memory and latency
  * @return TFLM_OK on success, TFLM_ERROR on failure
  */

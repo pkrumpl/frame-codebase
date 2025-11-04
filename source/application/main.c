@@ -478,18 +478,18 @@ int main(void)
     // TODO: after debugging and development, remove boot safety
     boot_safety_init();
 
-    // Test TFLM hello_world example
-    LOG("Running TFLM hello_world tests...");
-    tflm_status_t tflm_result = tflm_run_all_tests();
-    if (tflm_result == TFLM_OK) {
-        LOG("TFLM tests completed successfully!");
-    } else {
-        LOG("TFLM tests failed!");
-    }
-
     hardware_setup();
 
     bluetooth_setup();
+
+    // Initialize TFLM model once
+    LOG("Initializing TFLM model...");
+    tflm_status_t init_result = tflm_initialize();
+    if (init_result != TFLM_OK) {
+        LOG("ERROR: TFLM initialization failed!");
+    } else {
+        LOG("TFLM model initialized successfully!");
+    }
 
     while (1)
     {
