@@ -24,6 +24,26 @@
             },
         },
         {
+            "label": "Provision DK (Release → Erase → Flash J-Link)",
+            "type": "shell",
+            "command": "true",
+            "dependsOn": [
+                "Release (Development Kit)",
+                "Erase (J-Link)",
+                "Flash (J-Link)"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
             "label": "Build (Development Kit)",
             "type": "shell",
             "command": "make DEV_KIT=1",
