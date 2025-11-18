@@ -2,8 +2,19 @@
     "configurations": [
         {
             "name": "frame-codebase",
+            "intelliSenseMode": "gcc-arm",
             "cStandard": "gnu17",
             "cppStandard": "gnu++14",
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
+                "path": [
+                    "${workspaceFolder}/source/**",
+                    "${workspaceFolder}/libraries/lua",
+                    "${workspaceFolder}/libraries/nrfx/drivers/include",
+                    "${workspaceFolder}/libraries/softdevice/include"
+                ]
+            },
             "includePath": [
                 "libraries/cmsis/CMSIS/Core/Include",
                 "libraries/littlefs",

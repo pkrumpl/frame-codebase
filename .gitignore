@@ -8,8 +8,10 @@ build/
 simulation/
 abc.history
 
-# Ignore VSCode user settings
+# Ignore VSCode user settings and other files
 .vscode/settings.json
+.vscode/BROWSE.*
+.vscode/ipch
 
 # Ignore draw.io backup files
 *.png.bkp
@@ -25,3 +27,6 @@ production/frame-firmware-*.hex
 
 # Python virtual env
 .venv
+
+# Claude
+.claude
