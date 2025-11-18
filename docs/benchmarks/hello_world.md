@@ -1,9 +1,6 @@
 ## 🧪 Benchmark Results – Hello World (Float Model)
 
-The **Hello World** TensorFlow Lite Micro example (floating-point version) was benchmarked on **18 November 2025** using the **Brilliant Labs Frame** (nRF52840, Cortex-M4F @ 64 MHz).  
-The firmware commit used for this experiment:
-
-> d1444f82470fdaadc570491b27e9fd8f7f6ccfb6
+The **Hello World** TensorFlow Lite Micro example (floating-point version) was benchmarked on **18 November 2025** using the **Brilliant Labs Frame** (nRF52840, Cortex-M4F @ 64 MHz). The firmware commit used for this experiment is [d1444f82470fdaadc570491b27e9fd8f7f6ccfb6](https://github.com/pkrumpl/frame-codebase/tree/d1444f82470fdaadc570491b27e9fd8f7f6ccfb6).
 
 
 Each benchmark run evaluates **256 inferences**, repeated multiple times to check stability and variance.
