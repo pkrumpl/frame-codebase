@@ -114,8 +114,8 @@ float generate_random_test_value()
         // Convert 4 bytes to uint32_t
         uint32_t random_value = (random_bytes[0] << 24) | (random_bytes[1] << 16) |
                                 (random_bytes[2] << 8) | random_bytes[3];
-        // Scale to 0.0 to 2*PI (approximately 6.28)
-        return ((float)random_value / (float)UINT32_MAX) * (2.0f * M_PI);
+        // Scale to 0.0 to 2*PI (approximately 6.28318530718)
+        return ((float)random_value / (float)UINT32_MAX) * 6.28318530718f;
     } else {
         // Fallback to a default value if RNG fails
         return 1.23f;
@@ -243,7 +243,8 @@ void run_lua(bool is_paired)
                 "frame.display.text('Predicted: %.2f', 200, 220, { color = 'ORANGE' });"
                 "frame.display.text('Actual: %.2f', 200, 260, { color = 'GREEN' });"
                 "frame.display.text('Error: %.2f', 200, 300, { color = 'RED' });"
-                "frame.display.show();", input, predicted_output, actual_sin, error);
+                "frame.display.show();",
+                (double)input, (double)predicted_output, (double)actual_sin, (double)error);
             int status = luaL_dostring(L, lua_script);
             if (status != LUA_OK)
             {
