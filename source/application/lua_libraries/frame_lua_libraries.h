@@ -45,6 +45,7 @@ void lua_open_microphone_library(lua_State *L);
 void lua_open_system_library(lua_State *L);
 void lua_open_time_library(lua_State *L);
 void lua_open_version_library(lua_State *L);
+void lua_open_experiment_library(lua_State *L);
 
 void lua_open_file_library(lua_State *L, bool reformat);
 void lua_close_file_library(void);

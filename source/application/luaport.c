@@ -159,6 +159,7 @@ void run_lua(bool is_paired)
     lua_open_time_library(L);
     lua_open_led_library(L);
     lua_open_compression_library(L);
+    lua_open_experiment_library(L);
 
     lua_open_file_library(L, !is_paired);
 

@@ -51,6 +51,7 @@ C_FILES += \
 	watchdog.c \
 	lua_libraries/camera.c \
 	lua_libraries/display.c \
+	lua_libraries/experiment.c \
 	lua_libraries/file.c \
 	lua_libraries/imu.c \
 	lua_libraries/led.c \
