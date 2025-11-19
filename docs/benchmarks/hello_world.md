@@ -3,7 +3,7 @@
 This document compares the benchmark results of the **Hello World** TensorFlow Lite Micro example on the **Brilliant Labs Frame** (nRF52840, Cortex-M4F @ 64 MHz).
 
 - **Float model:** benchmarked on **18 November 2025** on [d1444f82470fdaadc570491b27e9fd8f7f6ccfb6](https://github.com/pkrumpl/frame-codebase/tree/d1444f82470fdaadc570491b27e9fd8f7f6ccfb6)
-- **Quantized INT8 model:** benchmarked on **19 November 2025** on [61a0a0619c02e2184fae99fa2a7541d83d6b81a0](https://github.com/pkrumpl/frame-codebase/tree/61a0a0619c02e2184fae99fa2a7541d83d6b81a0)
+- **Quantized INT8 model:** benchmarked on **19 November 2025** on [60861f57b4b0c9d03c3b34d74ad57ac38339afb8](https://github.com/pkrumpl/frame-codebase/tree/60861f57b4b0c9d03c3b34d74ad57ac38339afb8)
 
 Each benchmark run evaluates **256 inferences**, repeated to ensure stable results.
 
