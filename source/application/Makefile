@@ -148,7 +148,8 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/kernels/kernel_util.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.cc
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models/hello_world_int8_model_data.cc
 
 # Common header file paths (used by both C and C++)
 COMMON_INCLUDE_FLAGS := \

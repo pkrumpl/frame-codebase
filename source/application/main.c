@@ -37,6 +37,7 @@
 #include "nrf_clock.h"
 #include "nrf_gpio.h"
 #include "nrf_sdm.h"
+#include "nrf_soc.h"
 #include "nrf.h"
 #include "nrfx_gpiote.h"
 #include "nrfx_log.h"
@@ -50,6 +51,26 @@
 
 bool not_real_hardware = false;
 bool stay_awake = false;
+
+// Linker symbols for heap bounds
+extern char __heap_start;
+extern char __heap_end;
+
+// Get approximate free heap by checking current break
+static void log_memory_stats(void)
+{
+    uint32_t heap_size = (uint32_t)&__heap_end - (uint32_t)&__heap_start;
+
+    // Note: This gives total heap size, not available memory
+    // To get actual free memory would require malloc implementation details
+    LOG("Heap: start=%p end=%p size=%lu bytes",
+        &__heap_start, &__heap_end, (unsigned long)heap_size);
+
+    // Stack pointer gives current stack usage
+    uint32_t sp;
+    __asm volatile ("mov %0, sp" : "=r" (sp));
+    LOG("Stack pointer: %p", (void*)sp);
+}
 
 static void set_power_rails(bool enable)
 {
@@ -482,13 +503,26 @@ int main(void)
 
     bluetooth_setup();
 
-    // Initialize TFLM model once
-    LOG("Initializing TFLM model...");
+    // Log memory stats on development kit
+    #ifdef DEV_KIT_BUILD
+        log_memory_stats();
+    #endif
+
+    // Initialize TFLM models (both float and int8)
+    LOG("Initializing TFLM float model...");
     tflm_status_t init_result = tflm_initialize();
     if (init_result != TFLM_OK) {
-        LOG("ERROR: TFLM initialization failed!");
+        LOG("ERROR: TFLM float model initialization failed!");
     } else {
-        LOG("TFLM model initialized successfully!");
+        LOG("TFLM float model initialized successfully!");
+    }
+
+    LOG("Initializing TFLM int8 model...");
+    init_result = tflm_initialize_int8();
+    if (init_result != TFLM_OK) {
+        LOG("ERROR: TFLM int8 model initialization failed!");
+    } else {
+        LOG("TFLM int8 model initialized successfully!");
     }
 
     while (1)

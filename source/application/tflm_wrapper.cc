@@ -28,6 +28,7 @@ void* calloc(size_t, size_t);
 // Include TFLM headers
 #include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.h"
+#include "tensorflow/lite/micro/examples/hello_world/models/hello_world_int8_model_data.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -44,11 +45,26 @@ TfLiteStatus RegisterOps(HelloWorldOpResolver& op_resolver) {
   return kTfLiteOk;
 }
 
-// Persistent storage for the model interpreter
+// Persistent storage for the FLOAT model interpreter
 constexpr int kTensorArenaSize = 3000;
 uint8_t tensor_arena[kTensorArenaSize];
 tflite::MicroInterpreter* interpreter = nullptr;
 HelloWorldOpResolver* op_resolver = nullptr;
+
+// Persistent storage for the INT8 model interpreter
+constexpr int kTensorArenaSizeInt8 = 2500;  // Int8 needs less memory
+uint8_t tensor_arena_int8[kTensorArenaSizeInt8];
+tflite::MicroInterpreter* interpreter_int8 = nullptr;
+HelloWorldOpResolver* op_resolver_int8 = nullptr;
+
+// Cached quantization parameters for int8 model (avoid repeated memory reads)
+struct QuantizationParams {
+  float input_scale;
+  int32_t input_zero_point;
+  float output_scale;
+  int32_t output_zero_point;
+  float input_scale_inv;  // Pre-computed 1/input_scale for faster quantization
+} int8_quant_params = {0};
 
 }  // namespace
 
@@ -222,6 +238,189 @@ tflm_status_t tflm_run_all_tests(void) {
   MicroPrintf("\n========================================");
   MicroPrintf("  TFLM Demo Completed Successfully!");
   MicroPrintf("========================================\n");
+  return TFLM_OK;
+}
+
+/**
+ * Initialize the int8 quantized model
+ */
+tflm_status_t tflm_initialize_int8(void) {
+  MicroPrintf("Initializing TFLM int8 quantized model...");
+
+  tflite::InitializeTarget();
+
+  const tflite::Model* model =
+      ::tflite::GetModel(hello_world_int8_model_data);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    MicroPrintf("Int8 model schema version mismatch!");
+    return TFLM_ERROR;
+  }
+
+  // Create op resolver (this needs to persist)
+  static HelloWorldOpResolver static_op_resolver_int8;
+  op_resolver_int8 = &static_op_resolver_int8;
+
+  TfLiteStatus status = RegisterOps(*op_resolver_int8);
+  if (status != kTfLiteOk) {
+    MicroPrintf("Failed to register ops for int8 model");
+    return TFLM_ERROR;
+  }
+
+  // Create interpreter
+  static tflite::MicroInterpreter static_interpreter_int8(
+      model, *op_resolver_int8, tensor_arena_int8, kTensorArenaSizeInt8);
+  interpreter_int8 = &static_interpreter_int8;
+
+  status = interpreter_int8->AllocateTensors();
+  if (status != kTfLiteOk) {
+    MicroPrintf("AllocateTensors failed for int8 model");
+    return TFLM_ERROR;
+  }
+
+  // Cache quantization parameters to avoid repeated memory reads during inference
+  TfLiteTensor* input_tensor = interpreter_int8->input(0);
+  TfLiteTensor* output_tensor = interpreter_int8->output(0);
+
+  int8_quant_params.input_scale = input_tensor->params.scale;
+  int8_quant_params.input_zero_point = input_tensor->params.zero_point;
+  int8_quant_params.output_scale = output_tensor->params.scale;
+  int8_quant_params.output_zero_point = output_tensor->params.zero_point;
+  int8_quant_params.input_scale_inv = 1.0f / int8_quant_params.input_scale;  // Pre-compute for faster quantization
+
+  MicroPrintf("Int8 quantization params: input[scale=%.6f, zero=%d], output[scale=%.6f, zero=%d]",
+              (double)int8_quant_params.input_scale, int8_quant_params.input_zero_point,
+              (double)int8_quant_params.output_scale, int8_quant_params.output_zero_point);
+
+  MicroPrintf("TFLM int8 model initialized successfully!");
+  return TFLM_OK;
+}
+
+/**
+ * Run inference on the int8 quantized model
+ * Handles quantization of input and dequantization of output
+ * OPTIMIZED: Uses cached quantization parameters and faster math
+ */
+tflm_status_t tflm_infer_int8(float input, float* output) {
+  if (interpreter_int8 == nullptr) {
+    MicroPrintf("ERROR: Int8 model not initialized. Call tflm_initialize_int8() first!");
+    return TFLM_ERROR;
+  }
+
+  // Get input and output tensors (only need data pointers, not params)
+  TfLiteTensor* input_tensor = interpreter_int8->input(0);
+  TfLiteTensor* output_tensor = interpreter_int8->output(0);
+
+  // Quantize input using cached parameters and pre-computed inverse scale
+  // Optimized: multiply by inverse instead of divide (faster on ARM)
+  float input_scaled = input * int8_quant_params.input_scale_inv + int8_quant_params.input_zero_point;
+
+  // Fast rounding and clamping
+  int32_t input_quantized_32 = static_cast<int32_t>(input_scaled + (input_scaled >= 0 ? 0.5f : -0.5f));
+
+  // Clamp to int8 range [-128, 127] using branchless min/max
+  input_quantized_32 = (input_quantized_32 < -128) ? -128 : input_quantized_32;
+  input_quantized_32 = (input_quantized_32 > 127) ? 127 : input_quantized_32;
+
+  input_tensor->data.int8[0] = static_cast<int8_t>(input_quantized_32);
+
+  // Run inference
+  TfLiteStatus status = interpreter_int8->Invoke();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Invoke failed for int8 model with input %.3f", (double)input);
+    return TFLM_ERROR;
+  }
+
+  // Dequantize output using cached parameters
+  int8_t output_quantized = output_tensor->data.int8[0];
+  *output = static_cast<float>(output_quantized - int8_quant_params.output_zero_point) * int8_quant_params.output_scale;
+
+  return TFLM_OK;
+}
+
+/**
+ * Run inference on the int8 quantized model with DIRECT int8 input/output
+ * NO conversion overhead - this is the pure inference path
+ * Use tflm_quantize_input() and tflm_dequantize_output() helpers if needed
+ */
+tflm_status_t tflm_infer_int8_direct(int8_t input_quantized, int8_t* output_quantized) {
+  if (interpreter_int8 == nullptr) {
+    MicroPrintf("ERROR: Int8 model not initialized. Call tflm_initialize_int8() first!");
+    return TFLM_ERROR;
+  }
+
+  // Set input
+  interpreter_int8->input(0)->data.int8[0] = input_quantized;
+
+  // Run inference
+  TfLiteStatus status = interpreter_int8->Invoke();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Invoke failed for int8 model with input %d", input_quantized);
+    return TFLM_ERROR;
+  }
+
+  // Get output directly (no conversion)
+  *output_quantized = interpreter_int8->output(0)->data.int8[0];
+
+  return TFLM_OK;
+}
+
+/**
+ * Helper function: Quantize float input to int8
+ * Formula: int8 = clamp(round(float * (1/scale) + zero_point), -128, 127)
+ */
+int8_t tflm_quantize_input(float input) {
+  // Using cached quantization parameters
+  float input_scaled = input * int8_quant_params.input_scale_inv + int8_quant_params.input_zero_point;
+
+  // Round and convert to int32
+  int32_t input_quantized_32 = static_cast<int32_t>(input_scaled + (input_scaled >= 0 ? 0.5f : -0.5f));
+
+  // Clamp to int8 range [-128, 127]
+  if (input_quantized_32 < -128) return -128;
+  if (input_quantized_32 > 127) return 127;
+
+  return static_cast<int8_t>(input_quantized_32);
+}
+
+/**
+ * Helper function: Dequantize int8 output to float
+ * Formula: float = (int8 - zero_point) * scale
+ */
+float tflm_dequantize_output(int8_t output_quantized) {
+  // Using cached quantization parameters
+  return static_cast<float>(output_quantized - int8_quant_params.output_zero_point)
+         * int8_quant_params.output_scale;
+}
+
+/**
+ * Get information about the float model
+ */
+tflm_status_t tflm_get_float_model_info(tflm_model_info_t* info) {
+  if (info == nullptr) {
+    return TFLM_ERROR;
+  }
+
+  info->type = TFLM_MODEL_FLOAT;
+  info->model_size_bytes = hello_world_float_model_data_size;
+  info->arena_size_bytes = kTensorArenaSize;
+  info->initialized = (interpreter != nullptr);
+
+  return TFLM_OK;
+}
+
+/**
+ * Get information about the int8 model
+ */
+tflm_status_t tflm_get_int8_model_info(tflm_model_info_t* info) {
+  if (info == nullptr) {
+    return TFLM_ERROR;
+  }
+
+  info->type = TFLM_MODEL_INT8;
+  info->model_size_bytes = hello_world_int8_model_data_size;
+  info->arena_size_bytes = kTensorArenaSizeInt8;
+  info->initialized = (interpreter_int8 != nullptr);
+
   return TFLM_OK;
 }
 
