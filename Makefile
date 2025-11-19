@@ -75,7 +75,11 @@ settings-hex-zip:
 
 release:
 	@echo Releasing...
-	@make clean
+	@if [ "$(NO_CLEAN)" != "1" ]; then \
+		make clean; \
+	else \
+		echo "Skipping clean (NO_CLEAN=1)"; \
+	fi
 	@if [ -n "$(DEV_KIT)" ]; then \
 		echo "Building for Development Kit..."; \
 		make application DEV_KIT=1 BUILD_VERSION=$(BUILD_VERSION)-devkit; \
