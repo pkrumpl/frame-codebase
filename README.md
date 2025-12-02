@@ -49,6 +49,8 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, manag
 
 ## 🛠️ Debugging
 
+> Note: The `Application (J-Link)` launch configuration requires the SEGGER **J-Link Software and Documentation Pack** so that `JLinkGDBServerCL` is available to Cortex-Debug. Install it from [segger.com/downloads/jlink](https://www.segger.com/downloads/jlink) and ensure the binaries are on your `PATH` (or set `serverpath` in `.vscode/launch.json`).
+
 1. Open the project in [VS Code](https://code.visualstudio.com) and run the build tasks listed in `.vscode/tasks.json` (`Ctrl+Shift+P` → "Tasks: Run Task"). The `Build` task should complete without issues.
 
 2. If flashing fails, try the `Erase` task to unlock the device before reprogramming.
