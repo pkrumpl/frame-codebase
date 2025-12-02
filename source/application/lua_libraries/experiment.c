@@ -72,6 +72,18 @@ static int lua_experiment_hello_world(lua_State *L)
 
 static int lua_experiment_hello_world_quant(lua_State *L)
 {
+#if defined(CMSIS_NN)
+    bluetooth_send_data((const uint8_t *)"CMSIS-NN: ENABLED\n", 17);
+#else
+    bluetooth_send_data((const uint8_t *)"CMSIS-NN: DISABLED\n", 18);
+#endif
+
+#if defined(ARM_MATH_DSP)
+    bluetooth_send_data((const uint8_t *)"ARM DSP: ENABLED\n", 16);
+#else
+    bluetooth_send_data((const uint8_t *)"ARM DSP: DISABLED\n", 17);
+#endif
+
     enum { NUM_TEST_VALS = 256, BUF_LEN = 128 };
     char *str_buf = malloc(BUF_LEN);
     int8_t *inputs = malloc(sizeof(int8_t) * NUM_TEST_VALS);
