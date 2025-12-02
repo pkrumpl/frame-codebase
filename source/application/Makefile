@@ -108,6 +108,64 @@ C_FILES += \
 	$(LIBRARIES)/nrfx/helpers/nrfx_flag32_allocator.c \
 	$(LIBRARIES)/nrfx/mdk/system_nrf52840.c \
 	$(LIBRARIES)/segger/SEGGER_RTT.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions/arm_nn_activation_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions/arm_relu_q7.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions/arm_relu6_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_add_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_mul_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_w.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_x.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_y.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_z.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1x1_s8_fast.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1_x_n_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_wrapper_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_3x3_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_s8_opt.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_wrapper_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_depthwise_conv_s8_core.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_kernel_s8_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_transpose_conv_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_transpose_conv_wrapper_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_transpose_conv_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s4.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_per_channel_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_wrapper_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_vector_sum_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_batch_matmul_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s4.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_per_ch_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mul_core_1x_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mul_core_4x_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s4.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_depthwise_conv_nt_t_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_depthwise_conv_nt_t_padded_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nntables.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_q7_to_q15_with_offset.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_s8_to_s16_unordered_with_offset.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PadFunctions/arm_pad_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_avgpool_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_avgpool_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_max_pool_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ReshapeFunctions/arm_reshape_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_nn_softmax_common_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_state_s16_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_get_buffer_sizes_s8.c \
 
 # C++ source files (add your C++ files here)
 # Note: common.cc files are handled with explicit rules to avoid naming conflicts
@@ -121,7 +179,7 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_log.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_resource_variable.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_profiler.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_time.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/cortex_m_generic/micro_time.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_utils.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_helpers.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_op_resolver.cc \
@@ -131,11 +189,13 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/recording_micro_allocator.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/fake_micro_context.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/system_setup.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/debug_log.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/cortex_m_generic/debug_log.cc \
 	$(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/schema/schema_utils.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/micro_error_reporter.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/quantization_util.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/portable_tensor_utils.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/tensor_ctypes.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/kernels/internal/runtime_shape.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator/persistent_arena_buffer_allocator.cc \
@@ -145,11 +205,10 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_allocation_info.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/kernels/kernel_util.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models/hello_world_int8_model_data.cc
+	$(LIBRARIES)/tflm/examples/hello_world/models/hello_world_float_model_data.cc \
+	$(LIBRARIES)/tflm/examples/hello_world/models/hello_world_int8_model_data.cc
 
 # Common header file paths (used by both C and C++)
 COMMON_INCLUDE_FLAGS := \
@@ -159,6 +218,8 @@ COMMON_INCLUDE_FLAGS := \
 	-Ilua_libraries \
 	-Ilua_libraries/graphical_assets \
 	-I$(LIBRARIES)/cmsis/CMSIS/Core/Include \
+	-I$(LIBRARIES)/tflm/third_party/cmsis_nn/Include \
+	-I$(LIBRARIES)/tflm/third_party/cmsis_nn \
 	-I$(LIBRARIES)/littlefs \
 	-I$(LIBRARIES)/lua \
 	-I$(LIBRARIES)/lz4 \
@@ -170,6 +231,7 @@ COMMON_INCLUDE_FLAGS := \
 	-I$(LIBRARIES)/segger \
 	-I$(LIBRARIES)/softdevice/include \
 	-I$(LIBRARIES)/tflm \
+	-I$(LIBRARIES)/tflm/examples/hello_world \
 	-I$(LIBRARIES)/tflm/third_party/flatbuffers/include \
 	-I$(LIBRARIES)/tflm/third_party/gemmlowp \
 	-I$(LIBRARIES)/tflm/third_party/ruy
@@ -212,7 +274,11 @@ COMMON_FLAGS += -DDEV_KIT_BUILD
 endif
 
 # C-specific flags (includes local picolibc)
-CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) -std=gnu17
+CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) \
+	-std=gnu17 \
+	-DCMSIS_NN \
+	-DARM_MATH_DSP \
+	-DARM_MATH_LOOPUNROLL
 
 # C++-specific flags (excludes local picolibc to avoid header conflicts)
 CXXFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) \
@@ -224,6 +290,9 @@ CXXFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) \
 	-DTF_LITE_STATIC_MEMORY \
 	-DTF_LITE_DISABLE_X86_NEON \
 	-DTF_LITE_STRIP_ERROR_STRINGS \
+	-DCMSIS_NN \
+	-DARM_MATH_DSP \
+	-DARM_MATH_LOOPUNROLL \
 	-D_READ_WRITE_RETURN_TYPE=_ssize_t \
 	-D_READ_WRITE_BUFSIZE_TYPE=int \
 	-D_Thread_local=thread_local \
@@ -253,7 +322,7 @@ CPP_OBJECTS := $(addprefix $(BUILD)/obj/,$(notdir $(CPP_CPP_FILES:.cpp=.o))) \
                $(addprefix $(BUILD)/obj/,$(notdir $(CPP_CC_FILES:.cc=.o)))
 # Add explicit object files for conflicting names
 EXPLICIT_OBJECTS := $(BUILD)/obj/common_core.o $(BUILD)/obj/common_kernels.o \
-                    $(BUILD)/obj/kernel_util_kernels.o \
+                    $(BUILD)/obj/kernel_util_kernels.o $(BUILD)/obj/kernel_util_micro.o \
                     $(BUILD)/obj/bluetooth_app.o $(BUILD)/obj/bluetooth_lua.o \
                     $(BUILD)/obj/compression_app.o $(BUILD)/obj/compression_lua.o
 ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS) $(EXPLICIT_OBJECTS)
@@ -268,17 +337,30 @@ VPATH := . .. lua_libraries \
          $(LIBRARIES)/nrfx/mdk \
          $(LIBRARIES)/segger \
          $(LIBRARIES)/cpp_example \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PadFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ReshapeFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions \
+         $(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions \
          $(LIBRARIES)/tflm/tensorflow/lite/core/c \
          $(LIBRARIES)/tflm/tensorflow/lite/core/api \
          $(LIBRARIES)/tflm/tensorflow/lite/micro \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/cortex_m_generic \
          $(LIBRARIES)/tflm/tensorflow/lite/micro/arena_allocator \
          $(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner \
          $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels \
+         $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn \
          $(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge \
          $(LIBRARIES)/tflm/tensorflow/lite/kernels \
          $(LIBRARIES)/tflm/tensorflow/lite/kernels/internal \
          $(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/schema \
-         $(LIBRARIES)/tflm/tensorflow/lite/micro/examples/hello_world/models
+         $(LIBRARIES)/tflm/examples/hello_world/models
 
 # Default target
 all: $(BUILD)/application.hex
@@ -295,6 +377,11 @@ $(BUILD)/obj/common_kernels.o: $(LIBRARIES)/tflm/tensorflow/lite/kernels/interna
 	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
 
 $(BUILD)/obj/kernel_util_kernels.o: $(LIBRARIES)/tflm/tensorflow/lite/kernels/kernel_util.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/kernel_util_micro.o: $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/kernel_util.cc
 	@mkdir -p $(dir $@)
 	@echo "  CXX   $<"
 	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@

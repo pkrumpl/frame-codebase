@@ -16,8 +16,8 @@ limitations under the License.
 #include <math.h>
 
 #include "tensorflow/lite/core/c/common.h"
-#include "tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.h"
-#include "tensorflow/lite/micro/examples/hello_world/models/hello_world_int8_model_data.h"
+#include "models/hello_world_float_model_data.h"
+#include "models/hello_world_int8_model_data.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -49,7 +49,7 @@ TfLiteStatus ProfileMemoryAndLatency() {
   tflite::RecordingMicroAllocator* allocator(
       tflite::RecordingMicroAllocator::Create(tensor_arena, kTensorArenaSize));
   tflite::RecordingMicroInterpreter interpreter(
-      tflite::GetModel(hello_world_float_model_data), op_resolver, allocator,
+      tflite::GetModel(g_hello_world_float_model_data), op_resolver, allocator,
       tflite::MicroResourceVariables::Create(allocator, kNumResourceVariables),
       &profiler);
 
@@ -68,7 +68,7 @@ TfLiteStatus ProfileMemoryAndLatency() {
 
 TfLiteStatus LoadFloatModelAndPerformInference() {
   const tflite::Model* model =
-      ::tflite::GetModel(hello_world_float_model_data);
+      ::tflite::GetModel(g_hello_world_float_model_data);
   TFLITE_CHECK_EQ(model->version(), TFLITE_SCHEMA_VERSION);
 
   HelloWorldOpResolver op_resolver;
@@ -103,7 +103,7 @@ TfLiteStatus LoadQuantModelAndPerformInference() {
   // Map the model into a usable data structure. This doesn't involve any
   // copying or parsing, it's a very lightweight operation.
   const tflite::Model* model =
-      ::tflite::GetModel(hello_world_int8_model_data);
+      ::tflite::GetModel(g_hello_world_int8_model_data);
   TFLITE_CHECK_EQ(model->version(), TFLITE_SCHEMA_VERSION);
 
   HelloWorldOpResolver op_resolver;

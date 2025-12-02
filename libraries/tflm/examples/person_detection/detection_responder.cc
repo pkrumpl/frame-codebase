@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/lite/micro/examples/person_detection/detection_responder.h"
+#include "detection_responder.h"
 
 #include "tensorflow/lite/micro/micro_log.h"
 

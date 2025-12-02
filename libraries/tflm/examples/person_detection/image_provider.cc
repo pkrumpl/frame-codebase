@@ -13,9 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/lite/micro/examples/person_detection/image_provider.h"
+#include "image_provider.h"
 
-#include "tensorflow/lite/micro/examples/person_detection/model_settings.h"
+#include "model_settings.h"
 
 TfLiteStatus GetImage(int image_width, int image_height, int channels,
                       int8_t* image_data) {
