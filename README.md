@@ -23,16 +23,19 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, as we
 
 1. Ensure you have the [ARM GCC Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) installed.
 
-1. Ensure you have the [nRF Command Line Tools](https://www.nordicsemi.com/Products/Development-tools/nRF-Command-Line-Tools) installed.
+Note that this fork of the repo has only been tested with version **12.3** of the ARM GCC Toolchain. Make sure to download and use the correct version.
+Version used during development: *AArch32 bare-metal target (arm-none-eabi)*.
 
-1. Ensure you have [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) installed, along with the `device` and `nrf5sdk-tools` subcommands.
+2. Ensure you have the [nRF Command Line Tools](https://www.nordicsemi.com/Products/Development-tools/nRF-Command-Line-Tools) installed.
+
+3. Ensure you have [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) installed, along with the `device` and `nrf5sdk-tools` subcommands.
 
     ```sh
     ./nrfutil install device
     ./nrfutil install nrf5sdk-tools
     ```
 
-1. Clone this repository and initialize any submodules:
+4. Clone this repository and initialize any submodules:
 
     ```sh
     git clone https://github.com/brilliantlabsAR/frame-codebase.git
@@ -42,7 +45,7 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, as we
     git submodule update --init
     ```
 
-1. You should now be able to build and flash the project to an [nRF52840 DK](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-DK) by calling the following commands from the `frame-codebase` folder.
+5. You should now be able to build and flash the project to an [nRF52840 DK](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-DK) by calling the following commands from the `frame-codebase` folder.
 
     ```sh
     make release
@@ -60,15 +63,15 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, as we
 
     You may need to unlock the device by using the `Erase` task before programming or debugging.
 
-1. To enable IntelliSense, be sure to select the correct compiler from within VSCode. `Ctrl-Shift-P` (`Cmd-Shift-P` on MacOS) → `C/C++: Select IntelliSense Configuration` → `Use arm-none-eabi-gcc`.
+2. To enable IntelliSense, be sure to select the correct compiler from within VSCode. `Ctrl-Shift-P` (`Cmd-Shift-P` on MacOS) → `C/C++: Select IntelliSense Configuration` → `Use arm-none-eabi-gcc`.
 
-1. Install the [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) extension for VSCode in order to enable debugging.
+3. Install the [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) extension for VSCode in order to enable debugging.
 
-1. A debugging launch is already configured within `.vscode/launch.json`. Run the `Application (J-Link)` launch configuration from the `Run and Debug` panel, or press `F5`. The project will automatically build and flash before launching.
+4. A debugging launch is already configured within `.vscode/launch.json`. Run the `Application (J-Link)` launch configuration from the `Run and Debug` panel, or press `F5`. The project will automatically build and flash before launching.
 
-1. To monitor the logs, run the task `RTT Console (J-Link)` and ensure the `Application (J-Link)` launch configuration is running.
+5. To monitor the logs, run the task `RTT Console (J-Link)` and ensure the `Application (J-Link)` launch configuration is running.
 
-1. To debug using [Black Magic Probes](https://black-magic.org/index.html), follow the instructions [here](/production/blackmagic/README.md).
+6. To debug using [Black Magic Probes](https://black-magic.org/index.html), follow the instructions [here](/production/blackmagic/README.md).
 
 ## Getting started with FPGA development
 
