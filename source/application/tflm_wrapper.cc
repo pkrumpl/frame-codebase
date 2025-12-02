@@ -27,8 +27,8 @@ void* calloc(size_t, size_t);
 
 // Include TFLM headers
 #include "tensorflow/lite/core/c/common.h"
-#include "tensorflow/lite/micro/examples/hello_world/models/hello_world_float_model_data.h"
-#include "tensorflow/lite/micro/examples/hello_world/models/hello_world_int8_model_data.h"
+#include "examples/hello_world/models/hello_world_float_model_data.h"
+#include "examples/hello_world/models/hello_world_int8_model_data.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -36,6 +36,13 @@ void* calloc(size_t, size_t);
 #include "tensorflow/lite/schema/schema_generated.h"
 
 #include <math.h>
+
+// Compile-time check that CMSIS-NN is enabled
+#ifdef CMSIS_NN
+#pragma message("CMSIS-NN optimized kernels ENABLED")
+#else
+#pragma message("WARNING: CMSIS-NN is NOT enabled - using reference kernels (slower)")
+#endif
 
 namespace {
 using HelloWorldOpResolver = tflite::MicroMutableOpResolver<1>;
@@ -76,11 +83,16 @@ extern "C" {
  */
 tflm_status_t tflm_initialize(void) {
   MicroPrintf("Initializing TFLM hello_world model...");
+#ifdef CMSIS_NN
+  MicroPrintf("CMSIS-NN optimized kernels enabled");
+#else
+  MicroPrintf("Using reference kernels (CMSIS-NN not enabled)");
+#endif
 
   tflite::InitializeTarget();
 
   const tflite::Model* model =
-      ::tflite::GetModel(hello_world_float_model_data);
+      ::tflite::GetModel(g_hello_world_float_model_data);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("Model schema version mismatch!");
     return TFLM_ERROR;
@@ -149,7 +161,7 @@ tflm_status_t tflm_load_float_model_and_infer(void) {
   MicroPrintf("\n=== TFLM Hello World Float Model Demo ===");
 
   const tflite::Model* model =
-      ::tflite::GetModel(hello_world_float_model_data);
+      ::tflite::GetModel(g_hello_world_float_model_data);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("Model schema version mismatch!");
     return TFLM_ERROR;
@@ -246,11 +258,16 @@ tflm_status_t tflm_run_all_tests(void) {
  */
 tflm_status_t tflm_initialize_int8(void) {
   MicroPrintf("Initializing TFLM int8 quantized model...");
+#ifdef CMSIS_NN
+  MicroPrintf("✓ CMSIS-NN optimized kernels enabled");
+#else
+  MicroPrintf("⚠ Using reference kernels (CMSIS-NN not enabled)");
+#endif
 
   tflite::InitializeTarget();
 
   const tflite::Model* model =
-      ::tflite::GetModel(hello_world_int8_model_data);
+      ::tflite::GetModel(g_hello_world_int8_model_data);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("Int8 model schema version mismatch!");
     return TFLM_ERROR;
@@ -401,7 +418,7 @@ tflm_status_t tflm_get_float_model_info(tflm_model_info_t* info) {
   }
 
   info->type = TFLM_MODEL_FLOAT;
-  info->model_size_bytes = hello_world_float_model_data_size;
+  info->model_size_bytes = g_hello_world_float_model_data_size;
   info->arena_size_bytes = kTensorArenaSize;
   info->initialized = (interpreter != nullptr);
 
@@ -417,7 +434,7 @@ tflm_status_t tflm_get_int8_model_info(tflm_model_info_t* info) {
   }
 
   info->type = TFLM_MODEL_INT8;
-  info->model_size_bytes = hello_world_int8_model_data_size;
+  info->model_size_bytes = g_hello_world_int8_model_data_size;
   info->arena_size_bytes = kTensorArenaSizeInt8;
   info->initialized = (interpreter_int8 != nullptr);
 
