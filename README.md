@@ -1,80 +1,68 @@
-# Brilliant Labs Frame Firmware X TensorFlow Lite for Microcontrollers
+# ✨ Brilliant Labs Frame Firmware × TensorFlow Lite for Microcontrollers
 
 ![Header image (Brilliant Labs X TensorFlow Lite for Microcontrollers)](/docs/img/BrilliantLabs_TFLite.png)
 
-This project builds upon the open-source [Frame smart glasses](https://docs.brilliant.xyz/frame/frame/) by **Brilliant Labs**.  
-Its goal is to integrate [TensorFlow Lite for Microcontrollers (TFLM)](https://github.com/tensorflow/tflite-micro) directly into the glasses’ firmware.  
+> 🕶️ + 🧠 = ultra-light ML on your face. This fork layers [TensorFlow Lite for Microcontrollers (TFLM)](https://github.com/tensorflow/tflite-micro) directly into the open-source [Frame smart glasses](https://docs.brilliant.xyz/frame/frame/).
 
-By embedding TFLM into the firmware itself, the glasses can **run lightweight machine learning models locally**, without needing a connected host device.  
-This approach improves **reliability**, enables **real-time inference**, and reduces **latency** for ML-driven applications such as gesture recognition, sensor fusion, or low-power computer vision.
+By embedding TFLM into the firmware itself, the glasses can **run lightweight machine learning models locally**, without needing a connected host device. This approach improves **reliability**, enables **real-time inference**, and reduces **latency** for ML-driven applications such as gesture recognition, sensor fusion, or low-power computer vision.
 
-This project is **experimental** and intended for developers exploring how TFLite Micro can be deployed directly on the Frame hardware.  
-If you’re looking for the standard firmware or general documentation, please visit the official Brilliant Labs [documentation](https://docs.brilliant.xyz).
+This project is **experimental** and intended for developers exploring how TFLM can be deployed directly on the Frame hardware. If you’re looking for the standard firmware or general documentation, please visit the official Brilliant Labs [documentation](https://docs.brilliant.xyz).
 
-## System architecture
+## 🧱 System architecture
 
-The codebase is split into three sections. The **nRF52 Application**, the **nRF52 Bootloader**, and the **FPGA RTL**. 
+The codebase is split into three sections: the **nRF52 Application**, the **nRF52 Bootloader**, and the **FPGA RTL**.
 
-The nRF52 is designed to handle the overall system operation. It runs Lua, as well as handles Bluetooth networking, AI tasks and power management. The FPGA meanwhile, simply handles acceleration of the graphics and camera.
+The nRF52 is designed to handle the overall system operation. It runs Lua, manages Bluetooth networking, handles AI tasks, and looks after power management. The FPGA accelerates graphics and camera pipelines.
 
 ![Frame system architecture diagram](docs/diagrams/frame-system-architecture.drawio.png)
 
-## Getting started with nRF52 firmware development
+## 🚀 Getting started with nRF52 firmware development
 
 1. Ensure you have the [ARM GCC Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) installed.
 
-Note that this fork of the repo has only been tested with version **12.3** of the ARM GCC Toolchain. Make sure to download and use the correct version.
-Version used during development: *AArch32 bare-metal target (arm-none-eabi)*.
+    *This fork has only been tested with version **12.3** of the toolchain (AArch32 bare-metal, `arm-none-eabi`).*
 
-2. Ensure you have the [nRF Command Line Tools](https://www.nordicsemi.com/Products/Development-tools/nRF-Command-Line-Tools) installed.
+2. Install the [nRF Command Line Tools](https://www.nordicsemi.com/Products/Development-tools/nRF-Command-Line-Tools).
 
-3. Ensure you have [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) installed, along with the `device` and `nrf5sdk-tools` subcommands.
+3. Install [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) along with the `device` and `nrf5sdk-tools` subcommands:
 
     ```sh
     ./nrfutil install device
     ./nrfutil install nrf5sdk-tools
     ```
 
-4. Clone this repository and initialize any submodules:
+4. Clone this repository and initialize the submodules:
 
     ```sh
     git clone https://github.com/brilliantlabsAR/frame-codebase.git
-    
     cd frame-codebase
-
     git submodule update --init
     ```
 
-5. You should now be able to build and flash the project to an [nRF52840 DK](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-DK) by calling the following commands from the `frame-codebase` folder.
+5. Build and flash the project to an [nRF52840 DK](https://www.nordicsemi.com/Products/Development-hardware/nRF52840-DK):
 
     ```sh
     make release
-    make erase-jlink # Unlocks the flash protection if needed
+    make erase-jlink   # Unlocks the flash protection if needed
     make flash-jlink
     ```
 
-### Debugging
+## 🛠️ Debugging
 
-1. Open the project in [VSCode](https://code.visualstudio.com).
+1. Open the project in [VS Code](https://code.visualstudio.com) and run the build tasks listed in `.vscode/tasks.json` (`Ctrl+Shift+P` → "Tasks: Run Task"). The `Build` task should complete without issues.
 
-    There are some build tasks already configured within `.vscode/tasks.json`. Access them by pressing `Ctrl-Shift-P` (`Cmd-Shift-P` on MacOS) → `Tasks: Run Task`.
+2. If flashing fails, try the `Erase` task to unlock the device before reprogramming.
 
-    Try running the `Build` task. The project should build normally.
+3. For IntelliSense, select the `arm-none-eabi-gcc` configuration (`Ctrl+Shift+P` → `C/C++: Select IntelliSense Configuration`).
 
-    You may need to unlock the device by using the `Erase` task before programming or debugging.
+4. Install the [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) extension, then launch the configured `Application (J-Link)` target (`F5`) to build, flash, and start a debug session.
 
-2. To enable IntelliSense, be sure to select the correct compiler from within VSCode. `Ctrl-Shift-P` (`Cmd-Shift-P` on MacOS) → `C/C++: Select IntelliSense Configuration` → `Use arm-none-eabi-gcc`.
+5. Use the `RTT Debug Console (J-Link)` task to watch logs while the application is running.
 
-3. Install the [Cortex-Debug](https://marketplace.visualstudio.com/items?itemName=marus25.cortex-debug) extension for VSCode in order to enable debugging.
+6. To debug with a Black Magic Probe, follow `/production/blackmagic/README.md`.
 
-4. A debugging launch is already configured within `.vscode/launch.json`. Run the `Application (J-Link)` launch configuration from the `Run and Debug` panel, or press `F5`. The project will automatically build and flash before launching.
+## 🧮 Getting started with FPGA development
 
-5. To monitor the logs, run the task `RTT Console (J-Link)` and ensure the `Application (J-Link)` launch configuration is running.
+The complete FPGA architecture is described in `docs/fpga-architecture.md`.
 
-6. To debug using [Black Magic Probes](https://black-magic.org/index.html), follow the instructions [here](/production/blackmagic/README.md).
-
-## Getting started with FPGA development
-
-The complete FPGA architecture is described in the documentation [here](docs/fpga-architecture.md).
-
-The FPGA RTL is prebuilt and included in `fpga_application.h` for convenience. If you wish to modify the FPGA RTL, follow the instructions [here](docs/fpga-toolchain-setup.md).
+The FPGA RTL is prebuilt and included in `fpga_application.h` for convenience. If you wish to modify the FPGA RTL, follow `docs/fpga-toolchain-setup.md` to rebuild the bitstream.
