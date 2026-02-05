@@ -64,6 +64,11 @@ int boot_safety_init(void)
     if (boot_counter >= MAX_BOOT_ATTEMPTS)
     {
         LOG("Exceeded max boot attempts (%d). Entering DFU mode.", MAX_BOOT_ATTEMPTS);
+
+        // Reset the boot counter
+        boot_counter = 0;
+        NRF_POWER->GPREGRET2 = (NRF_POWER->GPREGRET2 & ~GPREGRET_BOOT_COUNTER_MASK) | ((boot_counter & 0xFF) << GPREGRET_BOOT_COUNTER_SHIFT);
+
         enter_dfu_mode();
     }
 
@@ -76,11 +81,4 @@ int boot_safety_init(void)
     LOG("Boot attempt %lu/%d", boot_counter, MAX_BOOT_ATTEMPTS);
 
     return 0;
-}
-
-void boot_safety_clear_counter(void)
-{
-    // Clear the boot counter to indicate successful operation
-    // Ignore errors here since this is a best-effort cleanup
-    NRF_POWER->GPREGRET = NRF_POWER->GPREGRET & ~GPREGRET_BOOT_COUNTER_MASK;
 }

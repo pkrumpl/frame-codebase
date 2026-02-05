@@ -36,9 +36,4 @@ void enter_dfu_mode(void);
  */
 int boot_safety_init(void);
 
-/*
- * Clear the boot counter after successful operation.
- */
-void boot_safety_clear_counter(void);
-
 #endif // BOOT_SAFETY_H
