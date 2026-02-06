@@ -219,39 +219,7 @@ void run_lua(bool is_paired)
         }
         else
         {
-            // Print TF Lite Hello World Model prediction if there is no command currently being executed
-            float input = generate_random_test_value();
-            float predicted_output = 0.0f;
-            float actual_sin = 0.0f;
-            float error = 0.0f;
-
-            tflm_status_t result = tflm_infer(input, &predicted_output);
-            if (result == TFLM_OK) {
-                actual_sin = sinf(input);
-                error = fabsf(actual_sin - predicted_output);
-                LOG("Input: %.2f  Predicted: %.4f  Actual sin(): %.4f  Error: %.4f",
-                    (double)input, (double)predicted_output, (double)actual_sin, (double)error);
-            } else {
-                LOG("ERROR: Inference failed for input %.2f", (double)input);
-            }
-
-            char lua_script[512];
-            snprintf(lua_script, sizeof(lua_script),
-                "frame.display.text('TF Lite Micro', 200, 100);"
-                "frame.display.text('Predict sin()', 200, 140);"
-                "frame.display.text('Input: %.2f', 200, 180, { color = 'SEABLUE' });"
-                "frame.display.text('Predicted: %.2f', 200, 220, { color = 'ORANGE' });"
-                "frame.display.text('Actual: %.2f', 200, 260, { color = 'GREEN' });"
-                "frame.display.text('Error: %.2f', 200, 300, { color = 'RED' });"
-                "frame.display.show();",
-                (double)input, (double)predicted_output, (double)actual_sin, (double)error);
-            int status = luaL_dostring(L, lua_script);
-            if (status != LUA_OK)
-            {
-                lua_pop(L, -1);
-            }
-
-            status = luaL_dostring(L, "frame.sleep(1)");
+            int status = luaL_dostring(L, "frame.sleep(0.01)");
             if (status != LUA_OK)
             {
                 lua_pop(L, -1);
