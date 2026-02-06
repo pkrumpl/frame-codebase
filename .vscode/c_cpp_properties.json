@@ -35,6 +35,7 @@
                 "libraries/tflm/third_party/gemmlowp",
                 "libraries/tflm/third_party/kissfft",
                 "libraries/tflm/third_party/ruy",
+                "libraries/tjpgd",
                 "source",
                 "source/application",
                 "source/application/lua_libraries",
