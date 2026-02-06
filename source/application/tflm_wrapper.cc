@@ -48,8 +48,8 @@ extern "C" {
  * FOMO Object Detection Model Implementation
  *============================================================================*/
 
-// FOMO model requires these ops: Conv2D, DepthwiseConv2D, Add, Reshape, Pad, MaxPool2D, Relu6
-using FomoOpResolver = tflite::MicroMutableOpResolver<8>;
+// FOMO model requires these ops
+using FomoOpResolver = tflite::MicroMutableOpResolver<9>;
 
 static TfLiteStatus RegisterFomoOps(FomoOpResolver& op_resolver) {
   TF_LITE_ENSURE_STATUS(op_resolver.AddConv2D());
@@ -59,7 +59,8 @@ static TfLiteStatus RegisterFomoOps(FomoOpResolver& op_resolver) {
   TF_LITE_ENSURE_STATUS(op_resolver.AddPad());
   TF_LITE_ENSURE_STATUS(op_resolver.AddMaxPool2D());
   TF_LITE_ENSURE_STATUS(op_resolver.AddRelu6());
-  TF_LITE_ENSURE_STATUS(op_resolver.AddMean());  // Often needed for global pooling
+  TF_LITE_ENSURE_STATUS(op_resolver.AddMean());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddSoftmax());
   return kTfLiteOk;
 }
 

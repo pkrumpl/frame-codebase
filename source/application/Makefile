@@ -194,6 +194,8 @@ C_FILES += \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_max_pool_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ReshapeFunctions/arm_reshape_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s8_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_nn_softmax_common_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_state_s16_s8.c \
@@ -256,7 +258,9 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce_common.cc
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce_common.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/softmax.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/softmax_common.cc
 
 # Common header file paths (used by both C and C++)
 COMMON_INCLUDE_FLAGS := \
