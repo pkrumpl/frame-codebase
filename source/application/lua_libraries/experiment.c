@@ -106,7 +106,7 @@ static int jpeg_output_func_no_rotation(JDEC *jd, void *bitmap, JRECT *rect)
 }
 
 /**
- * Bilinear upscale from 90x90 to 96x96 with 90° CCW rotation
+ * Bilinear upscale from 90x90 to 96x96 with 90° CW rotation
  * Used after TJpgDec scale=3 (1/8) decoding of 720px JPEG
  */
 static void upscale_90_to_96_with_rotation(const uint8_t *src, uint8_t *dst)
@@ -132,8 +132,8 @@ static void upscale_90_to_96_with_rotation(const uint8_t *src, uint8_t *dst)
                       src[y1 * SRC_SIZE + x0] * (1 - fx) * fy +
                       src[y1 * SRC_SIZE + x1] * fx * fy;
 
-            /* 90° CCW rotation during write: (dx, dy) -> (dx, DST_SIZE-1-dy) */
-            dst[dx * DST_SIZE + (DST_SIZE - 1 - dy)] = (uint8_t)(v + 0.5f);
+            /* 90° CW rotation during write: (dx, dy) -> (DST_SIZE-1-dx, dy) */
+            dst[(DST_SIZE - 1 - dx) * DST_SIZE + dy] = (uint8_t)(v + 0.5f);
         }
     }
 }
