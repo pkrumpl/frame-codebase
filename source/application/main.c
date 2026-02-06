@@ -48,6 +48,7 @@
 #include "watchdog.h"
 // TF Lite Micro
 #include "tflm_wrapper.h"
+#include "tensorflow/lite/micro/cortex_m_generic/debug_log_callback.h"
 
 bool not_real_hardware = false;
 bool stay_awake = false;
@@ -70,6 +71,12 @@ static void log_memory_stats(void)
     uint32_t sp;
     __asm volatile ("mov %0, sp" : "=r" (sp));
     LOG("Stack pointer: %p", (void*)sp);
+}
+
+// TFLM debug log callback - routes MicroPrintf output to RTT console
+static void tflm_debug_log_callback(const char* s)
+{
+    LOG("[TFLM]: %s", s);
 }
 
 static void set_power_rails(bool enable)
@@ -496,8 +503,11 @@ int main(void)
 {
     LOG("Frame firmware " BUILD_VERSION " (" GIT_COMMIT ")");
 
-    // TODO: after debugging and development, remove boot safety
+    // Add boot safety mechanism to protect glasses
     boot_safety_init();
+
+    // Register TFLM debug log callback to route to RTT console
+    RegisterDebugLogCallback(tflm_debug_log_callback);
 
     hardware_setup();
 
@@ -508,21 +518,13 @@ int main(void)
         log_memory_stats();
     #endif
 
-    // Initialize TFLM models (both float and int8)
-    LOG("Initializing TFLM float model...");
-    tflm_status_t init_result = tflm_initialize();
-    if (init_result != TFLM_OK) {
-        LOG("ERROR: TFLM float model initialization failed!");
+    // Initialize FOMO object detection model
+    LOG("Initializing FOMO object detection model...");
+    tflm_status_t fomo_result = fomo_initialize();
+    if (fomo_result != TFLM_OK) {
+        LOG("ERROR: FOMO model initialization failed!");
     } else {
-        LOG("TFLM float model initialized successfully!");
-    }
-
-    LOG("Initializing TFLM int8 model...");
-    init_result = tflm_initialize_int8();
-    if (init_result != TFLM_OK) {
-        LOG("ERROR: TFLM int8 model initialization failed!");
-    } else {
-        LOG("TFLM int8 model initialized successfully!");
+        LOG("FOMO model initialized successfully!");
     }
 
     while (1)
