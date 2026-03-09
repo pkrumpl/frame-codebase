@@ -70,6 +70,7 @@
                 "__result_use_check=",
                 // Dev Kit build flag
                 "DEV_KIT_BUILD=1",
+                "FRAME_DISABLE_MICROPHONE"
             ]
         }
     ],

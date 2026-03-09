@@ -41,7 +41,11 @@ void lua_open_compression_library(lua_State *L);
 void lua_open_display_library(lua_State *L);
 void lua_open_imu_library(lua_State *L);
 void lua_open_led_library(lua_State *L);
+
+#ifndef FRAME_DISABLE_MICROPHONE
 void lua_open_microphone_library(lua_State *L);
+#endif
+
 void lua_open_system_library(lua_State *L);
 void lua_open_time_library(lua_State *L);
 void lua_open_version_library(lua_State *L);

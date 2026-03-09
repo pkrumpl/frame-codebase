@@ -317,13 +317,16 @@ COMMON_FLAGS += \
 	-DLFS_NO_ERROR \
 	-DLFS_NO_WARN \
 	-DNDEBUG \
-	-DNRF52840_XXAA
+	-DNRF52840_XXAA \
 
 # Check if build is for development kit and include flag if necessary
 ifdef DEV_KIT
 $(info Including DEV_KIT_BUILD flag for Development Kit build...)
 COMMON_FLAGS += -DDEV_KIT_BUILD
 endif
+
+#* Note: Disable microphone functionality to save RAM
+COMMON_FLAGS += -DFRAME_DISABLE_MICROPHONE
 
 # C-specific flags (includes local picolibc)
 CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) \
@@ -509,7 +512,7 @@ $(BUILD)/application.hex: $(BUILD)/application.elf
 size-report: $(BUILD)/application.elf
 	@echo ""
 	@echo "====== MEMORY USAGE REPORT ======"
-	@arm-none-eabi-size $(BUILD)/application.elf | awk 'NR==1 {print; next} {text=$$1; data=$$2; bss=$$3; flash_used=(text+data)/1024; ram_used=(data+bss)/1024; flash_total=824; ram_total=245; flash_remain=flash_total-flash_used; ram_remain=ram_total-ram_used; flash_pct=flash_used/flash_total*100; ram_pct=ram_used/ram_total*100; printf "\nFLASH:\n  Used:      %.2f KB (%.1f%%)\n  Remaining: %.2f KB\n  Total:     %d KB\n\nRAM:\n  Used:      %.2f KB (%.1f%%)\n  Remaining: %.2f KB\n  Total:     %d KB\n\n====== SECTION SIZES ======\n  .text: %.2f KB (code)\n  .data: %.2f KB (initialized data)\n  .bss:  %.2f KB (uninitialized data)\n", flash_used, flash_pct, flash_remain, flash_total, ram_used, ram_pct, ram_remain, ram_total, text/1024, data/1024, bss/1024}'
+	@arm-none-eabi-size $(BUILD)/application.elf | awk 'NR==1 {print; next} {text=$$1; data=$$2; bss=$$3; flash_used=(text+data)/1024; ram_used=(data+bss)/1024; flash_total=824; ram_total=245; flash_remain=flash_total-flash_used; ram_remain=ram_total-ram_used; flash_pct=flash_used/flash_total*100; ram_pct=ram_used/ram_total*100; printf "\nFLASH:\n  Used:      %.2f KB (%.1f%%)\n  Remaining: %.2f KB\n  Total:     %d KB\n\nRAM:\n  Used:      %.2f KB (%.1f%%)\n  Remaining: %.2f KB (will be used for heap)\n  Total:     %d KB\n\n====== SECTION SIZES ======\n  .text: %.2f KB (code)\n  .data: %.2f KB (initialized data)\n  .bss:  %.2f KB (uninitialized data)\n", flash_used, flash_pct, flash_remain, flash_total, ram_used, ram_pct, ram_remain, ram_total, text/1024, data/1024, bss/1024}'
 	@echo ""
 
 # Clean

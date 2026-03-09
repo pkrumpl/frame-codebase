@@ -32,6 +32,13 @@
 #include "nrfx_pdm.h"
 #include "pinout.h"
 
+#ifdef FRAME_DISABLE_MICROPHONE
+#pragma message("Microphone functionality DISABLED")
+#endif
+
+// This file is conditionally compiled based on the FRAME_DISABLE_MICROPHONE macro
+#ifndef FRAME_DISABLE_MICROPHONE
+
 #define PDM_BUFFER_SIZE 128
 static int16_t pdm_buffers[2][PDM_BUFFER_SIZE];
 static bool sampling_active = false;
@@ -229,3 +236,4 @@ void lua_open_microphone_library(lua_State *L)
 
     lua_pop(L, 1);
 }
+#endif // FRAME_DISABLE_MICROPHONE

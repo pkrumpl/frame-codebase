@@ -154,7 +154,9 @@ void run_lua(bool is_paired)
     lua_open_bluetooth_library(L);
     lua_open_display_library(L);
     lua_open_camera_library(L);
+#ifndef FRAME_DISABLE_MICROPHONE
     lua_open_microphone_library(L);
+#endif
     lua_open_imu_library(L);
     lua_open_time_library(L);
     lua_open_led_library(L);
