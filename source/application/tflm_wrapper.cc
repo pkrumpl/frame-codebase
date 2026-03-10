@@ -28,7 +28,7 @@ void* calloc(size_t, size_t);
 
 // Include TFLM headers
 #include "tensorflow/lite/core/c/common.h"
-#include "models/fomo_beer_can_model_data.h"
+#include "models/fomo_beer_can_small_model_data.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -64,8 +64,9 @@ static TfLiteStatus RegisterFomoOps(FomoOpResolver& op_resolver) {
   return kTfLiteOk;
 }
 
-// FOMO tensor arena - 70KB
-constexpr int kFomoTensorArenaSize = 70 * 1024;
+// FOMO tensor arena
+// TODO: check for upper limit when removing hardcoded jpg data from experiment.c
+constexpr int kFomoTensorArenaSize = 135 * 1024;
 static uint8_t fomo_tensor_arena[kFomoTensorArenaSize] __attribute__((aligned(16)));
 static tflite::MicroInterpreter* fomo_interpreter = nullptr;
 static FomoOpResolver* fomo_op_resolver = nullptr;
@@ -84,7 +85,7 @@ tflm_status_t fomo_initialize(void) {
 
   tflite::InitializeTarget();
 
-  const tflite::Model* model = ::tflite::GetModel(fomo_beer_can_model);
+  const tflite::Model* model = ::tflite::GetModel(fomo_beer_can_small_model);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("FOMO model schema version mismatch! Expected %d, got %d",
                 TFLITE_SCHEMA_VERSION, model->version());
@@ -129,14 +130,14 @@ tflm_status_t fomo_initialize(void) {
               output->type);
 
   // Verify expected dimensions
-  if (input->dims->data[1] != 96 || input->dims->data[2] != 96) {
-    MicroPrintf("WARNING: Expected 96x96 input, got %dx%d",
+  if (input->dims->data[1] != 64 || input->dims->data[2] != 64) {
+    MicroPrintf("WARNING: Expected 64x64 input, got %dx%d",
                 input->dims->data[1], input->dims->data[2]);
   }
 
-  if (output->dims->data[1] != 12 || output->dims->data[2] != 12 ||
+  if (output->dims->data[1] != 8 || output->dims->data[2] != 8 ||
       output->dims->data[3] != 3) {
-    MicroPrintf("WARNING: Expected 12x12x3 output, got %dx%dx%d",
+    MicroPrintf("WARNING: Expected 8x8x3 output, got %dx%dx%d",
                 output->dims->data[1], output->dims->data[2],
                 output->dims->data[3]);
   }
@@ -151,9 +152,9 @@ tflm_status_t fomo_initialize(void) {
 }
 
 /**
- * Run FOMO inference on a 96x96 grayscale image
+ * Run FOMO inference on a 64x64 grayscale image
  * Input: uint8 grayscale [0-255]
- * Output: int8 grid [1, 12, 12, 3]
+ * Output: int8 grid [1, 8, 8, 3]
  *
  * Quantization: input scale ~ 1/255, zero_point = -128
  * So uint8_grayscale -> int8_input = grayscale - 128

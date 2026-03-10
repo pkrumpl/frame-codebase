@@ -23,7 +23,7 @@
  */
 
 __min_heap_size = 64K;
-__stack_size = 32K;
+__stack_size = 16K;
 
 SECTIONS
 {

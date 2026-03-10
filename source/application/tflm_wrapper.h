@@ -28,9 +28,9 @@ typedef enum {
  *============================================================================*/
 
 // FOMO model constants
-#define FOMO_INPUT_SIZE   9216   // 96x96 grayscale
-#define FOMO_OUTPUT_SIZE  432    // 12x12x3 grid (12*12*3 classes)
-#define FOMO_GRID_SIZE    12     // Output grid dimension
+#define FOMO_INPUT_SIZE   4096   // 64x64 grayscale
+#define FOMO_OUTPUT_SIZE  192    // 8x8x3 grid (8*8*3 classes)
+#define FOMO_GRID_SIZE    8      // Output grid dimension
 #define FOMO_NUM_CLASSES  3      // Background, Beer, Can
 
 /**
@@ -40,9 +40,9 @@ typedef enum {
 tflm_status_t fomo_initialize(void);
 
 /**
- * Run FOMO inference on a 96x96 grayscale image
- * @param input_grayscale Pointer to 9216 bytes of uint8 grayscale image data
- * @param output_grid Pointer to 432 bytes buffer for int8 output grid (12x12x3)
+ * Run FOMO inference on a 64x64 grayscale image
+ * @param input_grayscale Pointer to 4096 bytes of uint8 grayscale image data
+ * @param output_grid Pointer to 192 bytes buffer for int8 output grid (8x8x3)
  * @return TFLM_OK on success, TFLM_ERROR on failure
  */
 tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid);

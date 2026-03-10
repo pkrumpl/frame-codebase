@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <malloc.h>
 #include "error_logging.h"
 #include "lauxlib.h"
 #include "lua.h"
@@ -1826,7 +1827,7 @@ static int lua_experiment_send_grayscale(lua_State *L)
     const uint16_t CAPTURE_SIZE = 720;    /* Full sensor FOV */
     const uint16_t SCALED_SIZE = 90;      /* After TJpgDec scale=3 (720/8=90) */
     const uint16_t OUTPUT_SIZE = 96;      /* Final ML input size */
-    const size_t MAX_JPEG_SIZE = 65536;   /* 64KB for 720p JPEG */
+    const size_t MAX_JPEG_SIZE = 25 * 1024;   /*~ 25 KB estimation */
     const size_t CHUNK_SIZE = 200;        /* BLE MTU friendly chunk size */
     const size_t READ_CHUNK_SIZE = 512;   /* Chunk size for reading JPEG from camera */
 
@@ -1835,10 +1836,43 @@ static int lua_experiment_send_grayscale(lua_State *L)
     uint16_t actual_width, actual_height;
     int result;
 
+
+
+    // LOG the available heap
+    // TODO: 
+    extern char __heap_start;
+    extern char __heap_end;
+
+    size_t heap_total = (size_t)(&__heap_end) - (size_t)(&__heap_start);
+    struct mallinfo mi = mallinfo();
+
+    size_t heap_free = heap_total - mi.uordblks;
+    LOG("Heap: total=%u, used=%u, free=%u", heap_total, mi.uordblks, heap_free);
+    size_t unclaimed = heap_total - mi.arena;
+    LOG("Unclaimed: %u, Free blocks: %u (fragmented)", unclaimed, mi.fordblks);
+
     /* Allocate buffers */
     uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
+
+    LOG("Allocated JPEG buffer at %p", jpeg_buffer);
+    mi = mallinfo();
+    heap_free = heap_total - mi.uordblks;
+    LOG("Heap: total=%u, used=%u, free=%u", heap_total, mi.uordblks, heap_free);
+
     uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);  /* 90x90 = 8KB */
+
+    LOG("Allocated temp buffer at %p", temp_buffer);
+    mi = mallinfo();
+    heap_free = heap_total - mi.uordblks;
+    LOG("Heap: total=%u, used=%u, free=%u", heap_total, mi.uordblks, heap_free);
+
     uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 96x96 = 9KB */
+
+    LOG("Allocated gray buffer at %p", gray_buffer);
+    mi = mallinfo();
+    heap_free = heap_total - mi.uordblks;
+    LOG("Heap: total=%u, used=%u, free=%u", heap_total, mi.uordblks, heap_free);
+
     if (!jpeg_buffer || !temp_buffer || !gray_buffer) {
         if (jpeg_buffer) free(jpeg_buffer);
         if (temp_buffer) free(temp_buffer);
@@ -2157,26 +2191,26 @@ static int lua_experiment_send_grayscale(lua_State *L)
  * Returns: number of bytes sent
  *
  * Protocol:
- *   [IMAGE DATA]     9216 bytes (46 chunks × 200 bytes + remainder)
+ *   [IMAGE DATA]     4096 bytes (21 chunks × 200 bytes + remainder)
  *   [SEPARATOR]      0x01 0xFE 0xFE
- *   [PREDICTIONS]    432 bytes (3 chunks)
+ *   [PREDICTIONS]    192 bytes (1 chunk)
  *   [END MARKER]     0x01 0xFF 0xFF 0x00 0x00
  */
 static int lua_experiment_run_object_detection(lua_State *L)
 {
-    /* Full FOV capture: 720px sensor → scale=3 (1/8) → 90x90 → upscale to 96x96
+    /* Full FOV capture: 720px sensor → scale=3 (1/8) → 90x90 → downscale to 64x64
      * Memory budget:
-     *   - JPEG buffer: 64KB
+     *   - JPEG buffer: 25KB (720x720 JPEG)
      *   - Temp buffer (90x90): 8KB
-     *   - Output buffer (96x96): 9KB
-     *   - Tensor arena: ~100KB (allocated statically in tflm_wrapper.cc)
-     *   - Output grid: 432 bytes (stack)
-     *   - Peak total: ~181KB - fits in ~224KB available
+     *   - Output buffer (64x64): 4KB
+     *   - Tensor arena: ~135KB (allocated statically in tflm_wrapper.cc)
+     *   - Output grid: 192 bytes (stack)
+     *   - Peak total: ~172KB
      */
     const uint16_t CAPTURE_SIZE = 720;    /* Full sensor FOV */
     const uint16_t SCALED_SIZE = 90;      /* After TJpgDec scale=3 (720/8=90) */
-    const uint16_t OUTPUT_SIZE = 96;      /* Final ML input size */
-    const size_t MAX_JPEG_SIZE = 65536;   /* 64KB for 720p JPEG */
+    const uint16_t OUTPUT_SIZE = 64;      /* ML input size (64x64) */
+    const size_t MAX_JPEG_SIZE = 25 * 1024;   /* 25KB for 720x720 */
     const size_t CHUNK_SIZE = 200;        /* BLE MTU friendly chunk size */
     const size_t READ_CHUNK_SIZE = 512;   /* Chunk size for reading JPEG from camera */
 
@@ -2193,7 +2227,7 @@ static int lua_experiment_run_object_detection(lua_State *L)
     /* Allocate buffers */
     uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
     uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);  /* 90x90 = 8KB */
-    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 96x96 = 9KB */
+    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 64x64 = 4KB */
     if (!jpeg_buffer || !temp_buffer || !gray_buffer) {
         if (jpeg_buffer) free(jpeg_buffer);
         if (temp_buffer) free(temp_buffer);
@@ -2210,7 +2244,7 @@ static int lua_experiment_run_object_detection(lua_State *L)
     /* Use test image data instead of camera capture */
     free(jpeg_buffer);  /* Not needed for dev kit */
 
-    /* Decode with scale=3 (1/8): 720 → 90 */
+    /* Decode test image (720x720) with scale=3 (1/8) → 90x90, then downscale to 64x64 */
     result = jpeg_decode_grayscale_scaled(test_jpeg_data, test_jpeg_size,
                                            temp_buffer, SCALED_SIZE, SCALED_SIZE,
                                            &actual_width, &actual_height,
@@ -2223,10 +2257,36 @@ static int lua_experiment_run_object_detection(lua_State *L)
         return 0;
     }
 
-    LOG("DEV_KIT: decoded %dx%d, upscaling to %dx%d", actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
+    LOG("DEV_KIT: decoded %dx%d, downscaling to %dx%d", actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
 
-    /* Upscale 90x90 to 96x96 with rotation */
-    upscale_90_to_96_with_rotation(temp_buffer, gray_buffer);
+    /* Bilinear downscale 90x90 to 64x64 (no rotation for test image) */
+    {
+        const float scale = (float)SCALED_SIZE / (float)OUTPUT_SIZE;
+        for (int dy = 0; dy < OUTPUT_SIZE; dy++) {
+            for (int dx = 0; dx < OUTPUT_SIZE; dx++) {
+                float sx = dx * scale;
+                float sy = dy * scale;
+
+                int x0 = (int)sx;
+                int y0 = (int)sy;
+                int x1 = (x0 + 1 < SCALED_SIZE) ? x0 + 1 : x0;
+                int y1 = (y0 + 1 < SCALED_SIZE) ? y0 + 1 : y0;
+
+                float fx = sx - x0;
+                float fy = sy - y0;
+
+                float v00 = temp_buffer[y0 * SCALED_SIZE + x0];
+                float v10 = temp_buffer[y0 * SCALED_SIZE + x1];
+                float v01 = temp_buffer[y1 * SCALED_SIZE + x0];
+                float v11 = temp_buffer[y1 * SCALED_SIZE + x1];
+
+                float v = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                          v01 * (1-fx) * fy + v11 * fx * fy;
+
+                gray_buffer[dy * OUTPUT_SIZE + dx] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
     free(temp_buffer);
 
     actual_width = OUTPUT_SIZE;
@@ -2310,7 +2370,7 @@ static int lua_experiment_run_object_detection(lua_State *L)
     lua_newtable(L);
     lua_pushinteger(L, CAPTURE_SIZE);
     lua_setfield(L, -2, "resolution");
-    lua_pushstring(L, "HIGH");
+    lua_pushstring(L, "MEDIUM");
     lua_setfield(L, -2, "quality");
     if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
         const char *err = lua_tostring(L, -1);
@@ -2406,11 +2466,13 @@ static int lua_experiment_run_object_detection(lua_State *L)
     }
 
     /* ===== Step 5: Decode JPEG to grayscale with 1/8 scaling ===== */
+    /* 720x720 with scale=3 (1/8) → 90x90 */
     reload_watchdog(NULL, NULL);
+
     result = jpeg_decode_grayscale_scaled(jpeg_buffer, jpeg_size,
                                            temp_buffer, SCALED_SIZE, SCALED_SIZE,
                                            &actual_width, &actual_height,
-                                           3, false);
+                                           3, false);  /* scale=3 (1/8), no rotation */
 
     free(jpeg_buffer);
 
@@ -2421,9 +2483,44 @@ static int lua_experiment_run_object_detection(lua_State *L)
         return 0;
     }
 
-    /* ===== Step 6: Upscale 90x90 to 96x96 with 90° CCW rotation ===== */
+    LOG("Decoded %dx%d, downscaling to %dx%d with 90 CCW rotation",
+        actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
+
+    /* ===== Step 6: Downscale 90x90 to 64x64 with 90° CCW rotation ===== */
+    /* Bilinear downscale with rotation: (x, y) -> (y, SIZE-1-x) for 90° CCW */
     reload_watchdog(NULL, NULL);
-    upscale_90_to_96_with_rotation(temp_buffer, gray_buffer);
+    {
+        const float scale = (float)SCALED_SIZE / (float)OUTPUT_SIZE;  /* 90/64 = 1.40625 */
+        for (int dy = 0; dy < OUTPUT_SIZE; dy++) {
+            for (int dx = 0; dx < OUTPUT_SIZE; dx++) {
+                /* Map destination to source coordinates */
+                float sx = dx * scale;
+                float sy = dy * scale;
+
+                int x0 = (int)sx;
+                int y0 = (int)sy;
+                int x1 = (x0 + 1 < SCALED_SIZE) ? x0 + 1 : x0;
+                int y1 = (y0 + 1 < SCALED_SIZE) ? y0 + 1 : y0;
+
+                float fx = sx - x0;
+                float fy = sy - y0;
+
+                /* Bilinear interpolation */
+                float v00 = temp_buffer[y0 * SCALED_SIZE + x0];
+                float v10 = temp_buffer[y0 * SCALED_SIZE + x1];
+                float v01 = temp_buffer[y1 * SCALED_SIZE + x0];
+                float v11 = temp_buffer[y1 * SCALED_SIZE + x1];
+
+                float v = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                          v01 * (1-fx) * fy + v11 * fx * fy;
+
+                /* Apply 90° CCW rotation: (dx, dy) -> (dy, OUTPUT_SIZE-1-dx) */
+                int rx = dy;
+                int ry = OUTPUT_SIZE - 1 - dx;
+                gray_buffer[ry * OUTPUT_SIZE + rx] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
     free(temp_buffer);
 
     actual_width = OUTPUT_SIZE;
