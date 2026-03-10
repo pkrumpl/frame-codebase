@@ -2186,6 +2186,73 @@ static int lua_experiment_send_grayscale(lua_State *L)
 }
 
 /**
+ * Draw detection overlay on Frame display after FOMO inference
+ * @param output_grid Pointer to 192-byte int8 output grid (8x8x3)
+ */
+static void draw_detection_overlay(const int8_t *output_grid)
+{
+    const int8_t DETECTION_THRESHOLD = -50;
+    const uint16_t CELL_SIZE = 50;     /* 400/8 = 50 pixels per cell */
+    const uint16_t X_OFFSET = 120;     /* (640-400)/2 center horizontally */
+    const uint16_t SPRITE_SIZE = 16;
+
+    /* Palette color indices */
+    const uint8_t BEER_COLOR = 3;      /* RED */
+    const uint8_t CAN_COLOR = 14;      /* SKYBLUE */
+
+    /* 16x16 filled sprite (2-color, 1-bit): 256 pixels / 8 = 32 bytes all 0xFF */
+    static const uint8_t dot_sprite[32] = {
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+    };
+
+    for (int gy = 0; gy < FOMO_GRID_SIZE; gy++) {
+        for (int gx = 0; gx < FOMO_GRID_SIZE; gx++) {
+            /* Output grid layout: [y][x][class] flattened */
+            int idx = (gy * FOMO_GRID_SIZE + gx) * FOMO_NUM_CLASSES;
+
+            int8_t beer_score = output_grid[idx + 1];
+            int8_t can_score = output_grid[idx + 2];
+
+            uint8_t color = 0;
+            if (beer_score > DETECTION_THRESHOLD && beer_score >= can_score) {
+                color = BEER_COLOR;
+            } else if (can_score > DETECTION_THRESHOLD) {
+                color = CAN_COLOR;
+            }
+
+            if (color != 0) {
+                /* Calculate pixel position (center of cell, offset for sprite size) */
+                uint16_t px = X_OFFSET + gx * CELL_SIZE + (CELL_SIZE - SPRITE_SIZE) / 2;
+                uint16_t py = gy * CELL_SIZE + (CELL_SIZE - SPRITE_SIZE) / 2;
+
+                /* Build sprite command: 8-byte header + pixel data */
+                uint8_t meta[8] = {
+                    (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
+                    (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
+                    0, SPRITE_SIZE,    /* width = 16 */
+                    2,                 /* total_colors = 2 (1-bit) */
+                    color              /* palette_offset = color index */
+                };
+
+                uint8_t *payload = malloc(8 + 32);
+                if (payload) {
+                    memcpy(payload, meta, 8);
+                    memcpy(payload + 8, dot_sprite, 32);
+                    spi_write(FPGA, 0x12, payload, 40);
+                    free(payload);
+                }
+            }
+        }
+    }
+
+    /* Swap frame buffers to display */
+    spi_write(FPGA, 0x14, NULL, 0);
+}
+
+/**
  * Run FOMO object detection model and send results via Bluetooth
  * Usage: frame.experiment.run_object_detection_model()
  * Returns: number of bytes sent
@@ -2539,6 +2606,10 @@ static int lua_experiment_run_object_detection(lua_State *L)
     }
 
     LOG("FOMO inference complete");
+
+    /* ===== Step 7.5: Display detection overlay on Frame ===== */
+    draw_detection_overlay(output_grid);
+    reload_watchdog(NULL, NULL);
 
     /* ===== Step 8: Send image data via Bluetooth ===== */
     size_t total_bytes = actual_width * actual_height;  /* 9216 */
