@@ -2666,6 +2666,315 @@ static int lua_experiment_run_object_detection(lua_State *L)
 }
 
 /**
+ * Fast object detection - skips camera wake and autoexposure.
+ * Call frame.camera.power_save(false) and frame.camera.auto() before first use.
+ */
+static int lua_experiment_run_object_detection_fast(lua_State *L)
+{
+    const uint16_t CAPTURE_SIZE = 720;
+    const uint16_t SCALED_SIZE = 90;
+    const uint16_t OUTPUT_SIZE = 64;
+    const size_t MAX_JPEG_SIZE = 25 * 1024;
+    const size_t CHUNK_SIZE = 200;
+    const size_t READ_CHUNK_SIZE = 512;
+
+    size_t jpeg_size = 0;
+    uint16_t actual_width, actual_height;
+    int result;
+
+    if (!fomo_is_initialized()) {
+        luaL_error(L, "FOMO model not initialized");
+        return 0;
+    }
+
+    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
+    uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);
+    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);
+    if (!jpeg_buffer || !temp_buffer || !gray_buffer) {
+        if (jpeg_buffer) free(jpeg_buffer);
+        if (temp_buffer) free(temp_buffer);
+        if (gray_buffer) free(gray_buffer);
+        luaL_error(L, "allocation failed");
+        return 0;
+    }
+
+    memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
+    memset(temp_buffer, 0, SCALED_SIZE * SCALED_SIZE);
+    memset(gray_buffer, 0, OUTPUT_SIZE * OUTPUT_SIZE);
+
+#ifdef DEV_KIT_BUILD
+    free(jpeg_buffer);
+    result = jpeg_decode_grayscale_scaled(test_jpeg_data, test_jpeg_size,
+                                           temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                           &actual_width, &actual_height,
+                                           3, false);
+    if (result != 0) {
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "decode failed: %d", result);
+        return 0;
+    }
+
+    LOG("DEV_KIT: decoded %dx%d, downscaling to %dx%d", actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
+
+    {
+        const float scale = (float)SCALED_SIZE / (float)OUTPUT_SIZE;
+        for (int dy = 0; dy < OUTPUT_SIZE; dy++) {
+            for (int dx = 0; dx < OUTPUT_SIZE; dx++) {
+                float sx = dx * scale;
+                float sy = dy * scale;
+                int x0 = (int)sx;
+                int y0 = (int)sy;
+                int x1 = (x0 + 1 < SCALED_SIZE) ? x0 + 1 : x0;
+                int y1 = (y0 + 1 < SCALED_SIZE) ? y0 + 1 : y0;
+                float fx = sx - x0;
+                float fy = sy - y0;
+                float v00 = temp_buffer[y0 * SCALED_SIZE + x0];
+                float v10 = temp_buffer[y0 * SCALED_SIZE + x1];
+                float v01 = temp_buffer[y1 * SCALED_SIZE + x0];
+                float v11 = temp_buffer[y1 * SCALED_SIZE + x1];
+                float v = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                          v01 * (1-fx) * fy + v11 * fx * fy;
+                gray_buffer[dy * OUTPUT_SIZE + dx] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
+    free(temp_buffer);
+    actual_width = OUTPUT_SIZE;
+    actual_height = OUTPUT_SIZE;
+#else
+    /* Fast path: Skip camera wake (Step 0) and autoexposure (Step 1) */
+    /* Caller must ensure camera is awake and auto-adjusted before calling */
+
+    /* ===== Step 2: Capture image ===== */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "capture");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 3);
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "frame.camera.capture not found");
+        return 0;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, CAPTURE_SIZE);
+    lua_setfield(L, -2, "resolution");
+    lua_pushstring(L, "MEDIUM");
+    lua_setfield(L, -2, "quality");
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        lua_pop(L, 3);
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "camera.capture failed: %s", err);
+        return 0;
+    }
+    lua_pop(L, 2);
+
+    /* ===== Step 3: Wait for image to be ready ===== */
+    uint32_t timeout = 1000000;
+    uint32_t wdt_counter = 0;
+    bool ready = false;
+    while (timeout-- && !ready) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "image_ready");
+        if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+            const char *err = lua_tostring(L, -1);
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.image_ready failed: %s", err);
+            return 0;
+        }
+        ready = lua_toboolean(L, -1);
+        lua_pop(L, 3);
+        if (!ready) {
+            nrfx_systick_delay_us(10);
+            if (++wdt_counter >= 10000) {
+                reload_watchdog(NULL, NULL);
+                wdt_counter = 0;
+            }
+        }
+    }
+
+    if (!ready) {
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "capture timeout");
+        return 0;
+    }
+
+    /* ===== Step 4: Read JPEG data ===== */
+    jpeg_size = 0;
+    while (jpeg_size < MAX_JPEG_SIZE) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "read");
+        lua_pushinteger(L, READ_CHUNK_SIZE);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            const char *err = lua_tostring(L, -1);
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.read failed: %s", err);
+            return 0;
+        }
+
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 3);
+            break;
+        }
+
+        size_t chunk_len;
+        const char *chunk = lua_tolstring(L, -1, &chunk_len);
+        if (jpeg_size + chunk_len > MAX_JPEG_SIZE) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "JPEG too large");
+            return 0;
+        }
+        memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
+        jpeg_size += chunk_len;
+        lua_pop(L, 3);
+        reload_watchdog(NULL, NULL);
+    }
+
+    if (jpeg_size == 0) {
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "no JPEG data received");
+        return 0;
+    }
+
+    /* ===== Step 5: Decode JPEG to grayscale with 1/8 scaling ===== */
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_grayscale_scaled(jpeg_buffer, jpeg_size,
+                                           temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                           &actual_width, &actual_height,
+                                           3, false);
+    free(jpeg_buffer);
+
+    if (result != 0) {
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "decode failed: %d", result);
+        return 0;
+    }
+
+    LOG("Decoded %dx%d, downscaling to %dx%d with 90 CCW rotation",
+        actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
+
+    /* ===== Step 6: Downscale 90x90 to 64x64 with 90° CCW rotation ===== */
+    reload_watchdog(NULL, NULL);
+    {
+        const float scale = (float)SCALED_SIZE / (float)OUTPUT_SIZE;
+        for (int dy = 0; dy < OUTPUT_SIZE; dy++) {
+            for (int dx = 0; dx < OUTPUT_SIZE; dx++) {
+                float sx = dx * scale;
+                float sy = dy * scale;
+                int x0 = (int)sx;
+                int y0 = (int)sy;
+                int x1 = (x0 + 1 < SCALED_SIZE) ? x0 + 1 : x0;
+                int y1 = (y0 + 1 < SCALED_SIZE) ? y0 + 1 : y0;
+                float fx = sx - x0;
+                float fy = sy - y0;
+                float v00 = temp_buffer[y0 * SCALED_SIZE + x0];
+                float v10 = temp_buffer[y0 * SCALED_SIZE + x1];
+                float v01 = temp_buffer[y1 * SCALED_SIZE + x0];
+                float v11 = temp_buffer[y1 * SCALED_SIZE + x1];
+                float v = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                          v01 * (1-fx) * fy + v11 * fx * fy;
+                int rx = dy;
+                int ry = OUTPUT_SIZE - 1 - dx;
+                gray_buffer[ry * OUTPUT_SIZE + rx] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
+    free(temp_buffer);
+    actual_width = OUTPUT_SIZE;
+    actual_height = OUTPUT_SIZE;
+#endif /* !DEV_KIT_BUILD */
+
+    /* ===== Step 7: Run FOMO inference ===== */
+    reload_watchdog(NULL, NULL);
+    int8_t output_grid[FOMO_OUTPUT_SIZE];
+
+    tflm_status_t infer_status = fomo_infer(gray_buffer, output_grid);
+    if (infer_status != TFLM_OK) {
+        free(gray_buffer);
+        luaL_error(L, "FOMO inference failed");
+        return 0;
+    }
+
+    LOG("FOMO inference complete");
+
+    /* ===== Step 7.5: Display detection overlay on Frame ===== */
+    draw_detection_overlay(output_grid);
+    reload_watchdog(NULL, NULL);
+
+    /* ===== Step 8: Send image data via Bluetooth ===== */
+    size_t total_bytes = actual_width * actual_height;
+    size_t offset = 0;
+
+    uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
+    if (!chunk_buffer) {
+        free(gray_buffer);
+        luaL_error(L, "chunk allocation failed");
+        return 0;
+    }
+    chunk_buffer[0] = 0x01;
+
+    while (offset < total_bytes) {
+        size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
+        memcpy(chunk_buffer + 1, gray_buffer + offset, chunk);
+        bluetooth_send_data(chunk_buffer, chunk + 1);
+        offset += chunk;
+        nrfx_systick_delay_ms(20);
+        reload_watchdog(NULL, NULL);
+    }
+
+    free(gray_buffer);
+
+    /* ===== Step 9: Send separator ===== */
+    nrfx_systick_delay_ms(50);
+    uint8_t separator[3] = {0x01, 0xFE, 0xFE};
+    bluetooth_send_data(separator, 3);
+
+    /* ===== Step 10: Send predictions ===== */
+    nrfx_systick_delay_ms(50);
+    offset = 0;
+    while (offset < FOMO_OUTPUT_SIZE) {
+        size_t chunk = (FOMO_OUTPUT_SIZE - offset > CHUNK_SIZE) ? CHUNK_SIZE : (FOMO_OUTPUT_SIZE - offset);
+        chunk_buffer[0] = 0x01;
+        memcpy(chunk_buffer + 1, output_grid + offset, chunk);
+        bluetooth_send_data(chunk_buffer, chunk + 1);
+        offset += chunk;
+        nrfx_systick_delay_ms(20);
+        reload_watchdog(NULL, NULL);
+    }
+
+    /* ===== Step 11: Send end marker ===== */
+    nrfx_systick_delay_ms(100);
+    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+    bluetooth_send_data(end_marker, 5);
+
+    free(chunk_buffer);
+
+    lua_pushinteger(L, total_bytes + FOMO_OUTPUT_SIZE);
+    return 1;
+}
+
+/**
  * Experiments are callebale as 'frame.experiment.hello_world' for example
  */
 void lua_open_experiment_library(lua_State *L)
@@ -2680,6 +2989,9 @@ void lua_open_experiment_library(lua_State *L)
 
     lua_pushcfunction(L, lua_experiment_run_object_detection);
     lua_setfield(L, -2, "run_object_detection_model");
+
+    lua_pushcfunction(L, lua_experiment_run_object_detection_fast);
+    lua_setfield(L, -2, "run_object_detection_fast");
 
     lua_setfield(L, -2, "experiment");
 
