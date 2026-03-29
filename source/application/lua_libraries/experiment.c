@@ -3485,6 +3485,331 @@ static int lua_experiment_run_person_detection(lua_State *L)
 }
 
 /**
+ * Run person detection benchmark - local inference without Bluetooth transmission
+ * Lua: result = frame.experiment.run_person_detection_benchmark(iterations)
+ * Returns: { iterations, person_detections, total_time_ms, avg_time_ms }
+ */
+static int lua_experiment_run_person_detection_benchmark(lua_State *L)
+{
+    const uint16_t SCALED_SIZE = 90;       /* After TJpgDec scale=3 (720/8=90) */
+    const uint16_t OUTPUT_SIZE = 96;       /* ML input size (96x96) */
+
+    uint16_t actual_width, actual_height;
+    int result;
+
+    /* Get iterations parameter */
+    lua_Integer iterations = luaL_checkinteger(L, 1);
+    if (iterations < 1 || iterations > 1000) {
+        luaL_error(L, "iterations must be between 1 and 1000");
+        return 0;
+    }
+
+    /* Check if person detect model is initialized */
+    if (!person_detect_is_initialized()) {
+        luaL_error(L, "Person detect model not initialized");
+        return 0;
+    }
+
+    /* Allocate buffers - reused across all iterations */
+    uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);  /* 90x90 = 8KB */
+    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 96x96 = 9KB */
+    if (!temp_buffer || !gray_buffer) {
+        if (temp_buffer) free(temp_buffer);
+        if (gray_buffer) free(gray_buffer);
+        luaL_error(L, "allocation failed");
+        return 0;
+    }
+
+#ifndef DEV_KIT_BUILD
+    const uint16_t CAPTURE_SIZE = 720;
+    const size_t MAX_JPEG_SIZE = 25 * 1024;
+    const size_t READ_CHUNK_SIZE = 512;
+    size_t jpeg_size = 0;
+
+    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
+    if (!jpeg_buffer) {
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "JPEG allocation failed");
+        return 0;
+    }
+
+    /* ===== Initialize camera ONCE before benchmark loop ===== */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "power_save");
+    if (lua_isfunction(L, -1)) {
+        lua_pushboolean(L, 0);  /* power_save(false) */
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            lua_pop(L, 3);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 2);
+    nrfx_systick_delay_ms(100);
+
+    /* Auto-adjust camera (5 iterations) */
+    for (int i = 0; i < 5; i++) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "auto");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.auto not found");
+            return 0;
+        }
+        lua_newtable(L);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.auto failed");
+            return 0;
+        }
+        lua_pop(L, 3);
+        nrfx_systick_delay_ms(100);
+        reload_watchdog(NULL, NULL);
+    }
+    LOG("Benchmark: camera initialized");
+#endif
+
+    int person_count = 0;
+
+    /* Enable DWT cycle counter for precise timing */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    uint32_t start_cycles = DWT->CYCCNT;
+
+    /* ===== Main benchmark loop ===== */
+    for (int iter = 0; iter < iterations; iter++) {
+        reload_watchdog(NULL, NULL);
+
+        memset(temp_buffer, 0, SCALED_SIZE * SCALED_SIZE);
+        memset(gray_buffer, 0, OUTPUT_SIZE * OUTPUT_SIZE);
+
+#ifdef DEV_KIT_BUILD
+        /* DEV_KIT: Use hardcoded test JPEG data (same image each iteration) */
+        result = jpeg_decode_grayscale_scaled(test_jpeg_data, test_jpeg_size,
+                                               temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                               &actual_width, &actual_height,
+                                               3, false);  /* scale=3 (1/8), no rotation */
+        if (result != 0) {
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "decode failed: %d", result);
+            return 0;
+        }
+#else
+        /* Capture new image each iteration */
+        memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
+
+        /* Capture image */
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "capture");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.capture not found");
+            return 0;
+        }
+        lua_newtable(L);
+        lua_pushinteger(L, CAPTURE_SIZE);
+        lua_setfield(L, -2, "resolution");
+        lua_pushstring(L, "MEDIUM");
+        lua_setfield(L, -2, "quality");
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "capture failed");
+            return 0;
+        }
+        lua_pop(L, 2);
+
+        /* Wait for image ready */
+        uint32_t timeout = 1000000;
+        bool ready = false;
+        while (timeout-- && !ready) {
+            lua_getglobal(L, "frame");
+            lua_getfield(L, -1, "camera");
+            lua_getfield(L, -1, "image_ready");
+            if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+                lua_pop(L, 3);
+                free(jpeg_buffer);
+                free(temp_buffer);
+                free(gray_buffer);
+                luaL_error(L, "image_ready failed");
+                return 0;
+            }
+            ready = lua_toboolean(L, -1);
+            lua_pop(L, 3);
+            if (!ready) {
+                nrfx_systick_delay_us(10);
+            }
+            reload_watchdog(NULL, NULL);
+        }
+
+        if (!ready) {
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "capture timeout");
+            return 0;
+        }
+
+        /* Read JPEG data */
+        jpeg_size = 0;
+        while (jpeg_size < MAX_JPEG_SIZE) {
+            lua_getglobal(L, "frame");
+            lua_getfield(L, -1, "camera");
+            lua_getfield(L, -1, "read");
+            lua_pushinteger(L, READ_CHUNK_SIZE);
+            if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+                lua_pop(L, 3);
+                free(jpeg_buffer);
+                free(temp_buffer);
+                free(gray_buffer);
+                luaL_error(L, "read failed");
+                return 0;
+            }
+
+            if (lua_isnil(L, -1)) {
+                lua_pop(L, 3);
+                break;
+            }
+
+            size_t chunk_len;
+            const char *chunk = lua_tolstring(L, -1, &chunk_len);
+            memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
+            jpeg_size += chunk_len;
+            lua_pop(L, 3);
+            reload_watchdog(NULL, NULL);
+        }
+
+        /* Decode JPEG to 90x90 grayscale */
+        reload_watchdog(NULL, NULL);
+        result = jpeg_decode_grayscale_scaled(jpeg_buffer, jpeg_size,
+                                               temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                               &actual_width, &actual_height,
+                                               3, false);  /* scale=3 (1/8), no rotation */
+        if (result != 0) {
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "decode failed: %d", result);
+            return 0;
+        }
+#endif
+
+        /* Upscale 90x90 to 96x96 with 90° CCW rotation */
+        reload_watchdog(NULL, NULL);
+        {
+            const float scale = (float)SCALED_SIZE / (float)OUTPUT_SIZE;  /* 90/96 = 0.9375 */
+            for (int dy = 0; dy < OUTPUT_SIZE; dy++) {
+                for (int dx = 0; dx < OUTPUT_SIZE; dx++) {
+                    float sx = dx * scale;
+                    float sy = dy * scale;
+
+                    int x0 = (int)sx;
+                    int y0 = (int)sy;
+                    int x1 = (x0 + 1 < SCALED_SIZE) ? x0 + 1 : x0;
+                    int y1 = (y0 + 1 < SCALED_SIZE) ? y0 + 1 : y0;
+
+                    float fx = sx - x0;
+                    float fy = sy - y0;
+
+                    float v00 = temp_buffer[y0 * SCALED_SIZE + x0];
+                    float v10 = temp_buffer[y0 * SCALED_SIZE + x1];
+                    float v01 = temp_buffer[y1 * SCALED_SIZE + x0];
+                    float v11 = temp_buffer[y1 * SCALED_SIZE + x1];
+
+                    float v = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                              v01 * (1-fx) * fy + v11 * fx * fy;
+
+                    /* Apply 90° CCW rotation: (dx, dy) -> (dy, OUTPUT_SIZE-1-dx) */
+                    int rx = dy;
+                    int ry = OUTPUT_SIZE - 1 - dx;
+                    gray_buffer[ry * OUTPUT_SIZE + rx] = (uint8_t)(v + 0.5f);
+                }
+            }
+        }
+
+        /* Run person detection inference */
+        reload_watchdog(NULL, NULL);
+        int8_t output_scores[PERSON_OUTPUT_SIZE];
+
+        tflm_status_t infer_status = person_detect_infer(gray_buffer, output_scores);
+        if (infer_status != TFLM_OK) {
+            free(temp_buffer);
+            free(gray_buffer);
+#ifndef DEV_KIT_BUILD
+            free(jpeg_buffer);
+#endif
+            luaL_error(L, "Person detect inference failed");
+            return 0;
+        }
+
+        int8_t person_score = output_scores[PERSON_PERSON_INDEX];
+        int8_t not_person_score = output_scores[PERSON_NOT_PERSON_INDEX];
+        bool is_person = (person_score > not_person_score);
+
+        if (is_person) {
+            person_count++;
+        }
+
+        /* Update display every iteration */
+        draw_person_detection_overlay(is_person, person_score);
+        reload_watchdog(NULL, NULL);
+
+        /* Log progress every 10 iterations */
+        if ((iter + 1) % 10 == 0) {
+            LOG("Benchmark: %d/%d iterations", iter + 1, (int)iterations);
+        }
+    }
+
+    uint32_t end_cycles = DWT->CYCCNT;
+
+    /* Calculate timing - CPU runs at 64MHz */
+    uint32_t elapsed_cycles = end_cycles - start_cycles;
+    uint32_t total_ms = elapsed_cycles / 64000;  /* 64MHz = 64000 cycles/ms */
+    uint32_t avg_ms = total_ms / (uint32_t)iterations;
+
+    /* Cleanup */
+    free(temp_buffer);
+    free(gray_buffer);
+#ifndef DEV_KIT_BUILD
+    free(jpeg_buffer);
+#endif
+
+    LOG("Benchmark complete: %d iterations, %d detections, %lu ms total, %lu ms avg",
+        (int)iterations, person_count, total_ms, avg_ms);
+
+    /* Return results table */
+    lua_newtable(L);
+    lua_pushinteger(L, iterations);
+    lua_setfield(L, -2, "iterations");
+    lua_pushinteger(L, person_count);
+    lua_setfield(L, -2, "person_detections");
+    lua_pushinteger(L, total_ms);
+    lua_setfield(L, -2, "total_time_ms");
+    lua_pushinteger(L, avg_ms);
+    lua_setfield(L, -2, "avg_time_ms");
+
+    return 1;
+}
+
+/**
  * Experiments are callebale as 'frame.experiment.hello_world' for example
  */
 void lua_open_experiment_library(lua_State *L)
@@ -3505,6 +3830,9 @@ void lua_open_experiment_library(lua_State *L)
 
     lua_pushcfunction(L, lua_experiment_run_person_detection);
     lua_setfield(L, -2, "run_person_detection");
+
+    lua_pushcfunction(L, lua_experiment_run_person_detection_benchmark);
+    lua_setfield(L, -2, "run_person_detection_benchmark");
 
     lua_setfield(L, -2, "experiment");
 

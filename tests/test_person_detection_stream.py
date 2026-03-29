@@ -65,25 +65,6 @@ def print_handler(s: str):
     print(f"[Frame]: {s}")
 
 
-def update_plot(ax, image, scores, frame_count):
-    """Update the matplotlib plot with new frame data."""
-    ax.clear()
-
-    not_person_score = int(scores[0])
-    person_score = int(scores[1])
-    is_person = person_score > not_person_score
-
-    ax.imshow(image, cmap='gray', vmin=0, vmax=255)
-
-    result_text = "PERSON DETECTED" if is_person else "NO PERSON"
-    color = 'green' if is_person else 'red'
-
-    ax.set_title(f'Frame {frame_count}: {result_text}\n'
-                 f'Scores: person={person_score}, not_person={not_person_score}',
-                 fontsize=14, color=color)
-    ax.axis('off')
-
-
 async def main():
     global running
 
@@ -99,10 +80,21 @@ async def main():
 
     print("Starting person detection stream (Ctrl+C to stop)...")
 
-    # Setup matplotlib
+    # Setup matplotlib with optimized settings
     plt.ion()
-    fig, ax = plt.subplots(1, 1, figsize=(8, 8))
+    fig, ax = plt.subplots(1, 1, figsize=(6, 6))
     fig.suptitle("Person Detection Stream - Press Ctrl+C to stop")
+
+    # Create initial image and title objects (reuse these for performance)
+    initial_img = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH), dtype=np.uint8)
+    im = ax.imshow(initial_img, cmap='gray', vmin=0, vmax=255)
+    title = ax.set_title('Waiting for first frame...', fontsize=14)
+    ax.axis('off')
+
+    # Tight layout once
+    fig.tight_layout()
+    fig.canvas.draw()
+    plt.show(block=False)
 
     frame_count = 0
 
@@ -116,8 +108,8 @@ async def main():
         timeout = 30  # seconds
         elapsed = 0
         while not transfer_complete and elapsed < timeout and running:
-            await asyncio.sleep(0.1)
-            elapsed += 0.1
+            await asyncio.sleep(0.05)  # Reduced from 0.1 for faster response
+            elapsed += 0.05
 
         if not running:
             break
@@ -137,12 +129,24 @@ async def main():
             # Parse predictions
             scores = np.frombuffer(bytes(received_predictions[:EXPECTED_PRED_BYTES]), dtype=np.int8)
 
-            # Update display
-            update_plot(ax, img, scores, frame_count)
-            plt.pause(0.01)
+            not_person_score = int(scores[0])
+            person_score = int(scores[1])
+            is_person = person_score > not_person_score
+
+            # Update display efficiently (no ax.clear()!)
+            im.set_data(img)
+
+            result_text = "PERSON DETECTED" if is_person else "NO PERSON"
+            color = 'green' if is_person else 'red'
+            title.set_text(f'Frame {frame_count}: {result_text}\n'
+                          f'Scores: person={person_score}, not_person={not_person_score}')
+            title.set_color(color)
+
+            # Fast redraw
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
 
             # Print result
-            is_person = scores[1] > scores[0]
             print(f"Frame {frame_count}: {'PERSON' if is_person else 'NO PERSON'} "
                   f"(person={scores[1]}, not_person={scores[0]})")
         else:
