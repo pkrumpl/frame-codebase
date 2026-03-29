@@ -108,17 +108,6 @@ C_FILES += \
 	$(LIBRARIES)/nrfx/helpers/nrfx_flag32_allocator.c \
 	$(LIBRARIES)/nrfx/mdk/system_nrf52840.c \
 	$(LIBRARIES)/segger/SEGGER_RTT.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions/arm_nn_activation_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions/arm_relu_q7.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ActivationFunctions/arm_relu6_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_add_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_add_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_mul_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_mul_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_w.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_x.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_y.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConcatenationFunctions/arm_concatenation_s8_z.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1x1_s8_fast.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1x1_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1_x_n_s8.c \
@@ -134,17 +123,16 @@ C_FILES += \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1x1_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1x1_s4_fast.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_1_x_n_s4.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_convolve_even_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_kernel_row_offset_s8_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_kernel_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_kernel_s4_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_kernel_s8_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_3x3_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_s8_opt.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_wrapper_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_get_buffer_sizes_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_fast_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_wrapper_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_get_buffer_sizes_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_s4.c \
@@ -152,54 +140,42 @@ C_FILES += \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_wrapper_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_depthwise_conv_get_buffer_sizes_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_depthwise_conv_s8_core.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_kernel_s8_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_nn_mat_mult_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_transpose_conv_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_transpose_conv_wrapper_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ConvolutionFunctions/arm_transpose_conv_get_buffer_sizes_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s4.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_per_channel_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_wrapper_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_vector_sum_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_batch_matmul_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_per_ch_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mul_core_1x_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mul_core_4x_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mul_core_1x_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_t_s4.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_interleaved_t_even_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_depthwise_conv_nt_t_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_depthwise_conv_nt_t_padded_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_depthwise_conv_nt_t_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_depthwise_conv_nt_t_s4.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mul_core_1x_s4.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_mat_mult_nt_interleaved_t_even_s4.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nntables.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_q7_to_q15_with_offset.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_s8_to_s16_unordered_with_offset.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PadFunctions/arm_pad_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_avgpool_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_avgpool_get_buffer_sizes_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_avgpool_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_avgpool_get_buffer_sizes_s16.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_max_pool_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_max_pool_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/ReshapeFunctions/arm_reshape_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s8_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_softmax_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SoftmaxFunctions/arm_nn_softmax_common_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_state_s16_s8.c \
-	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/SVDFunctions/arm_svdf_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_s4.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_wrapper_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_per_channel_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_vector_sum_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_per_ch_s8.c \
 	$(LIBRARIES)/tjpgd/tjpgd.c \
 
 # C++ source files (add your C++ files here)
@@ -241,26 +217,20 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_allocation_info.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/conv_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/depthwise_conv_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/add.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/add_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pad.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pad_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pooling_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reshape.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reshape_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations_common.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/softmax.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/softmax_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/softmax.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/softmax_common.cc
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc
 
 # Common header file paths (used by both C and C++)
 COMMON_INCLUDE_FLAGS := \
@@ -310,7 +280,7 @@ COMMON_FLAGS += \
 	-mfloat-abi=hard \
 	-mthumb \
 	-nostdlib \
-	-O2 \
+	-Os \
 	-DBUILD_VERSION='"$(BUILD_VERSION)"' \
 	-DGIT_COMMIT='"$(GIT_COMMIT)"' \
 	-DLFS_NO_DEBUG \
@@ -369,6 +339,7 @@ endif
 # Linker flags
 LDFLAGS := \
 	-Wl,--gc-sections \
+	-Wl,-Map=$(BUILD)/application.map \
 	-T ../memory_layout.ld \
 	-T section_layout.ld \
 	-L$(LIBRARIES)/picolibc \

@@ -28,7 +28,15 @@ void* calloc(size_t, size_t);
 
 // Include TFLM headers
 #include "tensorflow/lite/core/c/common.h"
+
+// Enable/disable FOMO model (disable to save memory when using person detection)
+#define ENABLE_FOMO 0
+
+#if ENABLE_FOMO
 #include "models/fomo_beer_can_small_model_data.h"
+#endif
+
+#include "models/person_detect.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -47,6 +55,8 @@ extern "C" {
 /*=============================================================================
  * FOMO Object Detection Model Implementation
  *============================================================================*/
+
+#if ENABLE_FOMO
 
 // FOMO model requires these ops
 using FomoOpResolver = tflite::MicroMutableOpResolver<9>;
@@ -198,6 +208,170 @@ tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid) {
  */
 bool fomo_is_initialized(void) {
   return fomo_initialized;
+}
+
+#else  // !ENABLE_FOMO
+
+// Stub functions when FOMO is disabled
+tflm_status_t fomo_initialize(void) {
+  return TFLM_ERROR;
+}
+
+tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid) {
+  (void)input_grayscale;
+  (void)output_grid;
+  return TFLM_ERROR;
+}
+
+bool fomo_is_initialized(void) {
+  return false;
+}
+
+#endif  // ENABLE_FOMO
+
+/*=============================================================================
+ * Person Detection Model Implementation
+ *============================================================================*/
+
+// Person detect model requires 7 ops for larger models
+using PersonDetectOpResolver = tflite::MicroMutableOpResolver<7>;
+
+static TfLiteStatus RegisterPersonDetectOps(PersonDetectOpResolver& op_resolver) {
+  TF_LITE_ENSURE_STATUS(op_resolver.AddAveragePool2D());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddConv2D());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddDepthwiseConv2D());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddReshape());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddSoftmax());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddMean());
+  TF_LITE_ENSURE_STATUS(op_resolver.AddFullyConnected());
+  return kTfLiteOk;
+}
+
+// Person detect tensor arena - separate from FOMO
+// Model benchmarked to use < 90KB RAM
+constexpr int kPersonDetectTensorArenaSize = 78 * 1024;
+static uint8_t person_detect_tensor_arena[kPersonDetectTensorArenaSize] __attribute__((aligned(16)));
+static tflite::MicroInterpreter* person_detect_interpreter = nullptr;
+static PersonDetectOpResolver* person_detect_op_resolver = nullptr;
+static bool person_detect_initialized = false;
+
+/**
+ * Initialize the person detection model
+ */
+tflm_status_t person_detect_initialize(void) {
+  MicroPrintf("Initializing Person Detection model...");
+#ifdef CMSIS_NN
+  MicroPrintf("CMSIS-NN optimized kernels enabled");
+#else
+  MicroPrintf("Using reference kernels (CMSIS-NN not enabled)");
+#endif
+
+  tflite::InitializeTarget();
+
+  const tflite::Model* model = ::tflite::GetModel(person_detect_tflite);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    MicroPrintf("Person detect model schema version mismatch! Expected %d, got %d",
+                TFLITE_SCHEMA_VERSION, model->version());
+    return TFLM_ERROR;
+  }
+
+  // Create op resolver (needs to persist)
+  static PersonDetectOpResolver static_person_detect_op_resolver;
+  person_detect_op_resolver = &static_person_detect_op_resolver;
+
+  TfLiteStatus status = RegisterPersonDetectOps(*person_detect_op_resolver);
+  if (status != kTfLiteOk) {
+    MicroPrintf("Failed to register Person Detect ops");
+    return TFLM_ERROR;
+  }
+
+  // Create interpreter
+  static tflite::MicroInterpreter static_person_detect_interpreter(
+      model, *person_detect_op_resolver, person_detect_tensor_arena,
+      kPersonDetectTensorArenaSize);
+  person_detect_interpreter = &static_person_detect_interpreter;
+
+  status = person_detect_interpreter->AllocateTensors();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Person detect AllocateTensors failed");
+    return TFLM_ERROR;
+  }
+
+  // Verify input/output dimensions
+  TfLiteTensor* input = person_detect_interpreter->input(0);
+  TfLiteTensor* output = person_detect_interpreter->output(0);
+
+  MicroPrintf("Person detect input: dims=%d, shape=[%d,%d,%d,%d], type=%d",
+              input->dims->size,
+              input->dims->data[0], input->dims->data[1],
+              input->dims->data[2], input->dims->data[3],
+              input->type);
+
+  MicroPrintf("Person detect output: dims=%d, type=%d",
+              output->dims->size, output->type);
+
+  // Verify expected dimensions: [1, 96, 96, 1] input
+  if (input->dims->data[1] != 96 || input->dims->data[2] != 96) {
+    MicroPrintf("WARNING: Expected 96x96 input, got %dx%d",
+                input->dims->data[1], input->dims->data[2]);
+  }
+
+  size_t arena_used = person_detect_interpreter->arena_used_bytes();
+  MicroPrintf("Person detect arena used: %u bytes (of %u available)",
+              arena_used, kPersonDetectTensorArenaSize);
+
+  person_detect_initialized = true;
+  MicroPrintf("Person detection model initialized successfully!");
+  return TFLM_OK;
+}
+
+/**
+ * Run person detection inference on a 96x96 grayscale image
+ * Input: uint8 grayscale [0-255]
+ * Output: int8 scores [not_person, person]
+ *
+ * Quantization: input scale ~ 1/255, zero_point = -128
+ * So uint8_grayscale -> int8_input = grayscale - 128
+ */
+tflm_status_t person_detect_infer(const uint8_t* input_grayscale, int8_t* output_scores) {
+  if (!person_detect_initialized || person_detect_interpreter == nullptr) {
+    MicroPrintf("ERROR: Person detect model not initialized");
+    return TFLM_ERROR;
+  }
+
+  if (input_grayscale == nullptr || output_scores == nullptr) {
+    MicroPrintf("ERROR: Invalid input/output pointers");
+    return TFLM_ERROR;
+  }
+
+  // Get input tensor
+  TfLiteTensor* input = person_detect_interpreter->input(0);
+
+  // Convert uint8 grayscale [0-255] to int8 [-128, 127]
+  int8_t* input_data = input->data.int8;
+  for (int i = 0; i < PERSON_INPUT_SIZE; i++) {
+    input_data[i] = static_cast<int8_t>(static_cast<int16_t>(input_grayscale[i]) - 128);
+  }
+
+  // Run inference
+  TfLiteStatus status = person_detect_interpreter->Invoke();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Person detect Invoke failed");
+    return TFLM_ERROR;
+  }
+
+  // Copy output (2 int8 values)
+  TfLiteTensor* output = person_detect_interpreter->output(0);
+  memcpy(output_scores, output->data.int8, PERSON_OUTPUT_SIZE);
+
+  return TFLM_OK;
+}
+
+/**
+ * Check if person detection model is initialized
+ */
+bool person_detect_is_initialized(void) {
+  return person_detect_initialized;
 }
 
 } // extern "C"

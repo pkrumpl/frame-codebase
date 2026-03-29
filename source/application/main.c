@@ -518,13 +518,22 @@ int main(void)
         log_memory_stats();
     #endif
 
-    // Initialize FOMO object detection model
-    LOG("Initializing FOMO object detection model...");
-    tflm_status_t fomo_result = fomo_initialize();
-    if (fomo_result != TFLM_OK) {
-        LOG("ERROR: FOMO model initialization failed!");
+    // Initialize FOMO object detection model (DISABLED - using person detection instead)
+    // LOG("Initializing FOMO object detection model...");
+    // tflm_status_t fomo_result = fomo_initialize();
+    // if (fomo_result != TFLM_OK) {
+    //     LOG("ERROR: FOMO model initialization failed!");
+    // } else {
+    //     LOG("FOMO model initialized successfully!");
+    // }
+
+    // Initialize Person Detection model
+    LOG("Initializing Person Detection model...");
+    tflm_status_t person_result = person_detect_initialize();
+    if (person_result != TFLM_OK) {
+        LOG("ERROR: Person detection model initialization failed!");
     } else {
-        LOG("FOMO model initialized successfully!");
+        LOG("Person detection model initialized successfully!");
     }
 
     while (1)

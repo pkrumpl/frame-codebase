@@ -18,6 +18,7 @@
 #include "i2c.h"
 #include "nrfx_log.h"
 #include "watchdog.h"
+#include "bluetooth.h"
 
 /*-----------------------------------------------*/
 /* JPEG Decoder Context and Callbacks            */
@@ -233,7 +234,8 @@ int jpeg_decode_grayscale(const uint8_t *jpeg_data, size_t jpeg_size,
 #ifdef DEV_KIT_BUILD
 /* Test JPEG data for development kit builds without camera */
 /* 18918 bytes */
-static const uint8_t test_jpeg_data[]  __attribute__((used, section(".rodata"))) = {
+// TODO: this is in RAM right now, move to flash when enough space
+uint8_t test_jpeg_data[] = {
     0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
     0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43,
     0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
@@ -1812,6 +1814,8 @@ static const uint8_t test_jpeg_data[]  __attribute__((used, section(".rodata")))
     0x50, 0x01, 0x4d, 0xa7, 0x53, 0x6a, 0xc8, 0x0a, 0x28, 0xa2, 0x80, 0x0a,
     0x28, 0xa6, 0x50, 0x07, 0xff, 0xd9,
 };
+
+// static const uint8_t test_jpeg_data[]  __attribute__((used, section(".rodata"))) = {0};
 static const size_t test_jpeg_size = sizeof(test_jpeg_data);
 #endif
 
@@ -3115,6 +3119,372 @@ static int lua_experiment_run_object_detection_fast(lua_State *L)
 }
 
 /**
+ * Draw simple text overlay for person detection result.
+ * Displays colored indicator for PERSON (green) or NO PERSON (red)
+ *
+ * @param is_person True if person detected, false otherwise
+ * @param person_score Confidence score for person class
+ */
+static void draw_person_detection_overlay(bool is_person, int8_t person_score)
+{
+    const uint16_t DISPLAY_W = 640;
+    const uint16_t DISPLAY_H = 400;
+
+    /* Color indices */
+    const uint8_t PERSON_COLOR = 10;     /* GREEN for person */
+    const uint8_t NO_PERSON_COLOR = 3;   /* RED for no person */
+
+    /* Rectangle indicator: 100x60 filled block */
+    static const uint8_t block_sprite[750] = {  /* 100x60 = 6000 bits = 750 bytes, all 0xFF */
+        [0 ... 749] = 0xFF
+    };
+
+    /* Position: center of display */
+    int16_t px = (DISPLAY_W - 100) / 2;
+    int16_t py = (DISPLAY_H - 60) / 2;
+
+    uint8_t color = is_person ? PERSON_COLOR : NO_PERSON_COLOR;
+
+    /* Draw indicator block */
+    uint8_t meta[8] = {
+        (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
+        (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
+        0, 100,  /* width = 100 */
+        2,       /* 2 colors (1-bit) */
+        color
+    };
+
+    uint8_t *payload = malloc(8 + 750);
+    if (payload) {
+        memcpy(payload, meta, 8);
+        memcpy(payload + 8, block_sprite, 750);
+        spi_write(FPGA, 0x12, payload, 8 + 750);
+        free(payload);
+    }
+
+    /* Swap frame buffers to show */
+    spi_write(FPGA, 0x14, NULL, 0);
+}
+
+/**
+ * Run person detection on camera image.
+ *
+ * Image pipeline: 720x720 JPEG -> scale=3 (90x90) -> upscale to 96x96
+ * Output: Display PERSON (green) or NO PERSON (red) overlay
+ *
+ * Protocol:
+ *   [IMAGE DATA]     9216 bytes (96x96 grayscale)
+ *   [SEPARATOR]      0x01 0xFE 0xFE
+ *   [PREDICTIONS]    2 bytes (not_person_score, person_score)
+ *   [END MARKER]     0x01 0xFF 0xFF 0x00 0x00
+ */
+static int lua_experiment_run_person_detection(lua_State *L)
+{
+    const uint16_t CAPTURE_SIZE = 720;
+    const uint16_t SCALED_SIZE = 90;       /* After TJpgDec scale=3 (720/8=90) */
+    const uint16_t OUTPUT_SIZE = 96;       /* ML input size (96x96) */
+    const size_t MAX_JPEG_SIZE = 25 * 1024;
+    const size_t CHUNK_SIZE = 200;
+    const size_t READ_CHUNK_SIZE = 512;
+
+    size_t jpeg_size = 0;
+    uint16_t actual_width, actual_height;
+    int result;
+
+    /* Check if person detect model is initialized */
+    if (!person_detect_is_initialized()) {
+        luaL_error(L, "Person detect model not initialized");
+        return 0;
+    }
+
+    /* Allocate buffers */
+    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
+    uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);  /* 90x90 = 8KB */
+    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 96x96 = 9KB */
+    if (!jpeg_buffer || !temp_buffer || !gray_buffer) {
+        if (jpeg_buffer) free(jpeg_buffer);
+        if (temp_buffer) free(temp_buffer);
+        if (gray_buffer) free(gray_buffer);
+        luaL_error(L, "allocation failed");
+        return 0;
+    }
+
+    memset(temp_buffer, 0, SCALED_SIZE * SCALED_SIZE);
+    memset(gray_buffer, 0, OUTPUT_SIZE * OUTPUT_SIZE);
+
+#ifdef DEV_KIT_BUILD
+    /* DEV_KIT: Use hardcoded test JPEG data instead of camera */
+    free(jpeg_buffer);  /* Not needed for test path */
+    LOG("DEV_KIT: Using hardcoded test JPEG data (%u bytes)", test_jpeg_size);
+
+    /* Decode test JPEG to 90x90 grayscale */
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_grayscale_scaled(test_jpeg_data, test_jpeg_size,
+                                           temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                           &actual_width, &actual_height,
+                                           3, false);  /* scale=3 (1/8), no rotation */
+    if (result != 0) {
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "decode failed: %d", result);
+        return 0;
+    }
+    LOG("DEV_KIT: decoded %dx%d", actual_width, actual_height);
+
+#else /* !DEV_KIT_BUILD */
+    memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
+
+    /* ===== Step 1: Wake up camera ===== */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "power_save");
+    if (lua_isfunction(L, -1)) {
+        lua_pushboolean(L, 0);  /* power_save(false) */
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            lua_pop(L, 3);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 2);
+    nrfx_systick_delay_ms(100);
+
+    /* ===== Step 2: Auto-adjust camera (5 iterations) ===== */
+    for (int i = 0; i < 5; i++) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "auto");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.auto not found");
+            return 0;
+        }
+        lua_newtable(L);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "camera.auto failed");
+            return 0;
+        }
+        lua_pop(L, 3);
+        nrfx_systick_delay_ms(100);
+        reload_watchdog(NULL, NULL);
+    }
+
+    /* ===== Step 3: Capture image ===== */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "capture");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 3);
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "camera.capture not found");
+        return 0;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, CAPTURE_SIZE);
+    lua_setfield(L, -2, "resolution");
+    lua_pushstring(L, "MEDIUM");
+    lua_setfield(L, -2, "quality");
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        lua_pop(L, 3);
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "capture failed");
+        return 0;
+    }
+    lua_pop(L, 2);
+
+    /* ===== Step 4: Wait for image ready ===== */
+    uint32_t timeout = 1000000;
+    bool ready = false;
+    while (timeout-- && !ready) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "image_ready");
+        if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "image_ready failed");
+            return 0;
+        }
+        ready = lua_toboolean(L, -1);
+        lua_pop(L, 3);
+        if (!ready) {
+            nrfx_systick_delay_us(10);
+        }
+        reload_watchdog(NULL, NULL);
+    }
+
+    if (!ready) {
+        free(jpeg_buffer);
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "capture timeout");
+        return 0;
+    }
+
+    /* ===== Step 5: Read JPEG data ===== */
+    jpeg_size = 0;
+    while (jpeg_size < MAX_JPEG_SIZE) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "read");
+        lua_pushinteger(L, READ_CHUNK_SIZE);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            free(jpeg_buffer);
+            free(temp_buffer);
+            free(gray_buffer);
+            luaL_error(L, "read failed");
+            return 0;
+        }
+
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 3);
+            break;
+        }
+
+        size_t chunk_len;
+        const char *chunk = lua_tolstring(L, -1, &chunk_len);
+        memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
+        jpeg_size += chunk_len;
+        lua_pop(L, 3);
+        reload_watchdog(NULL, NULL);
+    }
+
+    LOG("Person detect: JPEG size = %u bytes", jpeg_size);
+
+    /* ===== Step 6: Decode JPEG to 90x90 grayscale ===== */
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_grayscale_scaled(jpeg_buffer, jpeg_size,
+                                           temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                           &actual_width, &actual_height,
+                                           3, false);  /* scale=3 (1/8), no rotation */
+    free(jpeg_buffer);
+
+    if (result != 0) {
+        free(temp_buffer);
+        free(gray_buffer);
+        luaL_error(L, "decode failed: %d", result);
+        return 0;
+    }
+
+    LOG("Person detect: decoded %dx%d, UPSCALING to %dx%d", actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
+#endif /* !DEV_KIT_BUILD */
+
+    /* ===== Step 7: UPSCALE 90x90 to 96x96 with 90° CCW rotation ===== */
+    reload_watchdog(NULL, NULL);
+    {
+        const float scale = (float)SCALED_SIZE / (float)OUTPUT_SIZE;  /* 90/96 = 0.9375 */
+        for (int dy = 0; dy < OUTPUT_SIZE; dy++) {
+            for (int dx = 0; dx < OUTPUT_SIZE; dx++) {
+                float sx = dx * scale;
+                float sy = dy * scale;
+
+                int x0 = (int)sx;
+                int y0 = (int)sy;
+                int x1 = (x0 + 1 < SCALED_SIZE) ? x0 + 1 : x0;
+                int y1 = (y0 + 1 < SCALED_SIZE) ? y0 + 1 : y0;
+
+                float fx = sx - x0;
+                float fy = sy - y0;
+
+                float v00 = temp_buffer[y0 * SCALED_SIZE + x0];
+                float v10 = temp_buffer[y0 * SCALED_SIZE + x1];
+                float v01 = temp_buffer[y1 * SCALED_SIZE + x0];
+                float v11 = temp_buffer[y1 * SCALED_SIZE + x1];
+
+                float v = v00 * (1-fx) * (1-fy) + v10 * fx * (1-fy) +
+                          v01 * (1-fx) * fy + v11 * fx * fy;
+
+                /* Apply 90° CCW rotation: (dx, dy) -> (dy, OUTPUT_SIZE-1-dx) */
+                int rx = dy;
+                int ry = OUTPUT_SIZE - 1 - dx;
+                gray_buffer[ry * OUTPUT_SIZE + rx] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
+    free(temp_buffer);
+
+    /* ===== Step 8: Run person detection inference ===== */
+    reload_watchdog(NULL, NULL);
+    int8_t output_scores[PERSON_OUTPUT_SIZE];  /* 2 bytes */
+
+    tflm_status_t infer_status = person_detect_infer(gray_buffer, output_scores);
+    if (infer_status != TFLM_OK) {
+        free(gray_buffer);
+        luaL_error(L, "Person detect inference failed");
+        return 0;
+    }
+
+    int8_t not_person_score = output_scores[PERSON_NOT_PERSON_INDEX];
+    int8_t person_score = output_scores[PERSON_PERSON_INDEX];
+    bool is_person = (person_score > not_person_score);
+
+    LOG("Person detect: not_person=%d, person=%d, result=%s",
+        not_person_score, person_score, is_person ? "PERSON" : "NO PERSON");
+
+    /* ===== Step 9: Display overlay ===== */
+    draw_person_detection_overlay(is_person, person_score);
+    reload_watchdog(NULL, NULL);
+
+    /* ===== Step 10: Send image data via Bluetooth ===== */
+    size_t total_bytes = OUTPUT_SIZE * OUTPUT_SIZE;  /* 9216 */
+    size_t offset = 0;
+
+    uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
+    if (!chunk_buffer) {
+        free(gray_buffer);
+        luaL_error(L, "chunk allocation failed");
+        return 0;
+    }
+    chunk_buffer[0] = 0x01;  /* Data flag */
+
+    while (offset < total_bytes) {
+        size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
+        memcpy(chunk_buffer + 1, gray_buffer + offset, chunk);
+        bluetooth_send_data(chunk_buffer, chunk + 1);
+        offset += chunk;
+        nrfx_systick_delay_ms(20);
+        reload_watchdog(NULL, NULL);
+    }
+
+    free(gray_buffer);
+
+    /* ===== Step 11: Send separator ===== */
+    nrfx_systick_delay_ms(50);
+    uint8_t separator[3] = {0x01, 0xFE, 0xFE};
+    bluetooth_send_data(separator, 3);
+
+    /* ===== Step 12: Send predictions (2 bytes) ===== */
+    nrfx_systick_delay_ms(50);
+    chunk_buffer[0] = 0x01;
+    memcpy(chunk_buffer + 1, output_scores, PERSON_OUTPUT_SIZE);
+    bluetooth_send_data(chunk_buffer, PERSON_OUTPUT_SIZE + 1);
+
+    /* ===== Step 13: Send end marker ===== */
+    nrfx_systick_delay_ms(100);
+    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+    bluetooth_send_data(end_marker, 5);
+
+    free(chunk_buffer);
+
+    lua_pushinteger(L, total_bytes + PERSON_OUTPUT_SIZE);
+    return 1;
+}
+
+/**
  * Experiments are callebale as 'frame.experiment.hello_world' for example
  */
 void lua_open_experiment_library(lua_State *L)
@@ -3132,6 +3502,9 @@ void lua_open_experiment_library(lua_State *L)
 
     lua_pushcfunction(L, lua_experiment_run_object_detection_fast);
     lua_setfield(L, -2, "run_object_detection_fast");
+
+    lua_pushcfunction(L, lua_experiment_run_person_detection);
+    lua_setfield(L, -2, "run_person_detection");
 
     lua_setfield(L, -2, "experiment");
 
