@@ -14,7 +14,10 @@ This work is part of a Master's Thesis at [Graz University of Technology (TU Gra
 
 The thesis is supervised by Assoc.Prof. Olga Saukh, who leads the ELSS group, with co-supervision from Dong Wang and Francesco Corti. The group studies how to run advanced AI models on devices where every kilobyte and milliwatt matters, focusing on making deep learning work on mobile and embedded devices like smartphones or wearables. Data privacy and environmental sustainability are important aspects of their research.
 
-<a href="https://www.tugraz.at"><img src="docs/img/TU_Graz.png" alt="TU Graz" height="60"></a>&nbsp;&nbsp;&nbsp;&nbsp;<a href="https://www.tugraz.at/arbeitsgruppen/iti-teams/elss/team-contact"><img src="docs/img/ELSS_logo.png" alt="ELSS Group" height="60"></a>
+<div style="background-color: white; display: inline-flex; align-items: center; gap: 20px; padding: 10px; border-radius: 4px;">
+  <a href="https://www.tugraz.at"><img src="docs/img/TU_Graz.png" alt="TU Graz" height="60"></a>
+  <a href="https://www.tugraz.at/arbeitsgruppen/iti-teams/elss/team-contact"><img src="docs/img/ELSS_logo.png" alt="ELSS Group" height="60"></a>
+</div>
 
 ## 🔬 ML Experiments
 
