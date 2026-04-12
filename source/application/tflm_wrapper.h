@@ -66,7 +66,15 @@ bool fomo_is_initialized(void);
 // Person detect model constants
 #define PERSON_INPUT_WIDTH   96
 #define PERSON_INPUT_HEIGHT  96
-#define PERSON_INPUT_SIZE    9216   // 96x96 grayscale
+
+#if defined(ML_EXPERIMENT_VWW_RGB)
+#define PERSON_INPUT_CHANNELS 3
+#define PERSON_INPUT_SIZE    27648  // 96x96x3 RGB
+#else
+#define PERSON_INPUT_CHANNELS 1
+#define PERSON_INPUT_SIZE    9216   // 96x96x1 grayscale
+#endif
+
 #define PERSON_OUTPUT_SIZE   2      // 2 classes: not_person, person
 #define PERSON_NOT_PERSON_INDEX 0
 #define PERSON_PERSON_INDEX     1
@@ -78,12 +86,13 @@ bool fomo_is_initialized(void);
 tflm_status_t person_detect_initialize(void);
 
 /**
- * Run person detection inference on a 96x96 grayscale image
- * @param input_grayscale Pointer to 9216 bytes of uint8 grayscale image data
+ * Run person detection inference on a 96x96 image
+ * @param input_image Pointer to PERSON_INPUT_SIZE bytes of uint8 image data
+ *                    (9216 bytes for grayscale, 27648 bytes for RGB)
  * @param output_scores Pointer to 2 bytes buffer for int8 output scores [not_person, person]
  * @return TFLM_OK on success, TFLM_ERROR on failure
  */
-tflm_status_t person_detect_infer(const uint8_t* input_grayscale, int8_t* output_scores);
+tflm_status_t person_detect_infer(const uint8_t* input_image, int8_t* output_scores);
 
 /**
  * Check if person detection model is initialized

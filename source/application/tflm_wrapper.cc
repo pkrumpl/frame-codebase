@@ -220,7 +220,7 @@ bool fomo_is_initialized(void) {
  * Person Detection Model Implementation
  *============================================================================*/
 
-#if defined(ML_EXPERIMENT_VWW)
+#if defined(ML_EXPERIMENT_VWW) || defined(ML_EXPERIMENT_VWW_RGB)
 
 // Person detect model requires 7 ops for larger models
 using PersonDetectOpResolver = tflite::MicroMutableOpResolver<7>;
@@ -237,8 +237,12 @@ static TfLiteStatus RegisterPersonDetectOps(PersonDetectOpResolver& op_resolver)
 }
 
 // Person detect tensor arena - separate from FOMO
-// Model benchmarked to use < 90KB RAM
+// Model benchmarked to use < 90KB RAM (RGB model may need more)
+#if defined(ML_EXPERIMENT_VWW_RGB)
+constexpr int kPersonDetectTensorArenaSize = 100 * 1024;  // RGB model needs more arena
+#else
 constexpr int kPersonDetectTensorArenaSize = 78 * 1024;
+#endif
 static uint8_t person_detect_tensor_arena[kPersonDetectTensorArenaSize] __attribute__((aligned(16)));
 static tflite::MicroInterpreter* person_detect_interpreter = nullptr;
 static PersonDetectOpResolver* person_detect_op_resolver = nullptr;
@@ -248,7 +252,11 @@ static bool person_detect_initialized = false;
  * Initialize the person detection model
  */
 tflm_status_t person_detect_initialize(void) {
+#if defined(ML_EXPERIMENT_VWW_RGB)
+  MicroPrintf("Initializing Person Detection RGB model...");
+#else
   MicroPrintf("Initializing Person Detection model...");
+#endif
 #ifdef CMSIS_NN
   MicroPrintf("CMSIS-NN optimized kernels enabled");
 #else
@@ -257,7 +265,11 @@ tflm_status_t person_detect_initialize(void) {
 
   tflite::InitializeTarget();
 
+#if defined(ML_EXPERIMENT_VWW_RGB)
+  const tflite::Model* model = ::tflite::GetModel(person_detect_rgb_tflite);
+#else
   const tflite::Model* model = ::tflite::GetModel(person_detect_tflite);
+#endif
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("Person detect model schema version mismatch! Expected %d, got %d",
                 TFLITE_SCHEMA_VERSION, model->version());
@@ -299,11 +311,22 @@ tflm_status_t person_detect_initialize(void) {
   MicroPrintf("Person detect output: dims=%d, type=%d",
               output->dims->size, output->type);
 
-  // Verify expected dimensions: [1, 96, 96, 1] input
+  // Verify expected dimensions: [1, 96, 96, channels] input
   if (input->dims->data[1] != 96 || input->dims->data[2] != 96) {
     MicroPrintf("WARNING: Expected 96x96 input, got %dx%d",
                 input->dims->data[1], input->dims->data[2]);
   }
+#if defined(ML_EXPERIMENT_VWW_RGB)
+  if (input->dims->data[3] != 3) {
+    MicroPrintf("WARNING: Expected 3 channels (RGB), got %d",
+                input->dims->data[3]);
+  }
+#else
+  if (input->dims->data[3] != 1) {
+    MicroPrintf("WARNING: Expected 1 channel (grayscale), got %d",
+                input->dims->data[3]);
+  }
+#endif
 
   size_t arena_used = person_detect_interpreter->arena_used_bytes();
   MicroPrintf("Person detect arena used: %u bytes (of %u available)",

@@ -62,6 +62,36 @@ int jpeg_decode_grayscale(const uint8_t *jpeg_data, size_t jpeg_size,
  */
 void upscale_90_to_96_with_rotation(const uint8_t *src, uint8_t *dst);
 
+#if defined(ML_EXPERIMENT_VWW_RGB)
+/*-----------------------------------------------*/
+/* RGB Image Processing Functions                */
+/*-----------------------------------------------*/
+
+/**
+ * Decode JPEG data to RGB888 with optional scaling
+ * @param jpeg_data Pointer to JPEG data
+ * @param jpeg_size Size of JPEG data
+ * @param out_buffer Output buffer for RGB pixels (must be pre-allocated, 3 bytes per pixel)
+ * @param out_width Expected output width (after scaling)
+ * @param out_height Expected output height (after scaling)
+ * @param actual_width Pointer to store actual decoded width (after scaling)
+ * @param actual_height Pointer to store actual decoded height (after scaling)
+ * @param scale TJpgDec scale factor: 0=1:1, 1=1:2, 2=1:4, 3=1:8
+ * @param apply_rotation If true, apply 90 CCW rotation during decode
+ * @return 0 on success, negative error code on failure
+ */
+int jpeg_decode_rgb_scaled(const uint8_t *jpeg_data, size_t jpeg_size,
+                           uint8_t *out_buffer, uint16_t out_width, uint16_t out_height,
+                           uint16_t *actual_width, uint16_t *actual_height,
+                           uint8_t scale, bool apply_rotation);
+
+/**
+ * Bilinear upscale from 90x90 to 96x96 RGB with 90 CCW rotation
+ */
+void upscale_90_to_96_rgb_with_rotation(const uint8_t *src, uint8_t *dst);
+
+#endif /* ML_EXPERIMENT_VWW_RGB */
+
 /*-----------------------------------------------*/
 /* Experiment Interface                          */
 /*-----------------------------------------------*/

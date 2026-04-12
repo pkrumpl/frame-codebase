@@ -535,6 +535,14 @@ int main(void)
     } else {
         LOG("Person detection model initialized successfully!");
     }
+#elif defined(ML_EXPERIMENT_VWW_RGB)
+    LOG("Initializing Person Detection RGB model...");
+    tflm_status_t ml_result = person_detect_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Person detection RGB model initialization failed!");
+    } else {
+        LOG("Person detection RGB model initialized successfully!");
+    }
 #elif defined(ML_EXPERIMENT_HELLO_WORLD)
     LOG("Initializing Hello World float model...");
     tflm_status_t ml_result = tflm_initialize();
