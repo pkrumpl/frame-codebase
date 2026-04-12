@@ -24,6 +24,81 @@
             },
         },
         {
+            "label": "Provision DK (Release → Erase → Flash J-Link)",
+            "type": "shell",
+            "command": "true",
+            "dependsOn": [
+                "Release (Development Kit)",
+                "Erase (J-Link)",
+                "Flash (J-Link)"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
+            "label": "Provision DK (Release (NO_CLEAN) → Erase → Flash J-Link)",
+            "type": "shell",
+            "command": "true",
+            "dependsOn": [
+                "Release (Development Kit; No Clean)",
+                "Erase (J-Link)",
+                "Flash (J-Link)"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
+            "label": "Build (Development Kit)",
+            "type": "shell",
+            "command": "make DEV_KIT=1",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "silent",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+        },
+        {
+            "label": "Size Report",
+            "type": "shell",
+            "command": "make -C source/application size-report",
+            "problemMatcher": ["$gcc"],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            },
+            "group": "build"
+        },
+        {
             "label": "Build Bootloader",
             "type": "shell",
             "command": "make bootloader",
@@ -43,6 +118,54 @@
             "label": "Release",
             "type": "shell",
             "command": "make release",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
+            "label": "Release (NO_CLEAN; ATTENTION!)",
+            "type": "shell",
+            "command": "make release NO_CLEAN=1",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
+            "label": "Release (Development Kit)",
+            "type": "shell",
+            "command": "make release DEV_KIT=1",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "presentation": {
+                "echo": false,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": true
+            }
+        },
+        {
+            "label": "Release (Development Kit; No Clean)",
+            "type": "shell",
+            "command": "make release DEV_KIT=1 NO_CLEAN=1",
             "problemMatcher": [
                 "$gcc"
             ],

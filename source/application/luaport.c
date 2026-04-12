@@ -23,6 +23,7 @@
  */
 
 #include <string.h>
+#include <math.h>
 #include "bluetooth.h"
 #include "error_logging.h"
 #include "frame_lua_libraries.h"
@@ -32,6 +33,7 @@
 #include "nrf_soc.h"
 #include "nrfx_log.h"
 #include "watchdog.h"
+#include "tflm_wrapper.h"
 
 lua_State *L_global = NULL;
 
@@ -103,6 +105,23 @@ int show_pairing_screen(bool is_paired, bool is_update)
     return status;
 }
 
+// Generate a random float value between 0 and 2*PI
+float generate_random_test_value()
+{
+    uint8_t random_bytes[4];
+    uint32_t retval = sd_rand_application_vector_get(random_bytes, 4);
+    if (retval == NRF_SUCCESS) {
+        // Convert 4 bytes to uint32_t
+        uint32_t random_value = (random_bytes[0] << 24) | (random_bytes[1] << 16) |
+                                (random_bytes[2] << 8) | random_bytes[3];
+        // Scale to 0.0 to 2*PI (approximately 6.28318530718)
+        return ((float)random_value / (float)UINT32_MAX) * 6.28318530718f;
+    } else {
+        // Fallback to a default value if RNG fails
+        return 1.23f;
+    }
+}
+
 void run_lua(bool is_paired)
 {
     lua_State *L = luaL_newstate();
@@ -135,11 +154,14 @@ void run_lua(bool is_paired)
     lua_open_bluetooth_library(L);
     lua_open_display_library(L);
     lua_open_camera_library(L);
+#ifndef FRAME_DISABLE_MICROPHONE
     lua_open_microphone_library(L);
+#endif
     lua_open_imu_library(L);
     lua_open_time_library(L);
     lua_open_led_library(L);
     lua_open_compression_library(L);
+    lua_open_experiment_library(L);
 
     lua_open_file_library(L, !is_paired);
 

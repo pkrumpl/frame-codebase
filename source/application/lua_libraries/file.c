@@ -22,6 +22,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <stdbool.h>
 #include "error_logging.h"
 #include "flash.h"
 #include "frame_lua_libraries.h"
@@ -29,6 +30,9 @@
 #include "lfs.h"
 #include "lua.h"
 #include "luaconf.h"
+
+// Track if filesystem is available (may be disabled if insufficient flash space)
+static bool filesystem_available = false;
 
 static int lfs_api_read_block(const struct lfs_config *c,
                               lfs_block_t block,
@@ -166,6 +170,11 @@ static int lua_file_close(lua_State *L)
 
 static int lua_file_open(lua_State *L)
 {
+    if (!filesystem_available)
+    {
+        return luaL_error(L, "filesystem not available (insufficient flash space)");
+    }
+
     const char *filename = luaL_checkstring(L, 1);
     const char *mode = luaL_optstring(L, 2, "r");
 
@@ -288,6 +297,11 @@ static int lua_file_write(lua_State *L)
 
 static int lua_file_remove(lua_State *L)
 {
+    if (!filesystem_available)
+    {
+        return luaL_error(L, "filesystem not available");
+    }
+
     const char *filename = luaL_checkstring(L, 1);
 
     int error = lfs_remove(&filesystem, filename);
@@ -302,6 +316,11 @@ static int lua_file_remove(lua_State *L)
 
 static int lua_file_rename(lua_State *L)
 {
+    if (!filesystem_available)
+    {
+        return luaL_error(L, "filesystem not available");
+    }
+
     const char *from_name = luaL_checkstring(L, 1);
     const char *to_name = luaL_checkstring(L, 2);
 
@@ -317,6 +336,11 @@ static int lua_file_rename(lua_State *L)
 
 static int lua_file_mkdir(lua_State *L)
 {
+    if (!filesystem_available)
+    {
+        return luaL_error(L, "filesystem not available");
+    }
+
     size_t path_length;
     const char *full_path = luaL_checklstring(L, 1, &path_length);
 
@@ -358,6 +382,11 @@ static int lua_file_mkdir(lua_State *L)
 
 static int lua_file_listdir(lua_State *L)
 {
+    if (!filesystem_available)
+    {
+        return luaL_error(L, "filesystem not available");
+    }
+
     const char *full_path = luaL_checkstring(L, 1);
 
     lfs_dir_t directory;
@@ -412,6 +441,11 @@ static int lua_file_listdir(lua_State *L)
 
 static int lua_file_require(lua_State *L)
 {
+    if (!filesystem_available)
+    {
+        return luaL_error(L, "filesystem not available");
+    }
+
     file_stream_t stream;
 
     const char *module_name = luaL_checkstring(L, 1);
@@ -493,13 +527,25 @@ void lua_open_file_library(lua_State *L, bool reformat)
     filesystem_config.block_size = page_size;
     filesystem_config.block_count = (total_size / page_size) - 1;
 
-    int file_mount_error = lfs_mount(&filesystem, &filesystem_config);
-
-    if (reformat || file_mount_error)
+    // LittleFS needs at least 4 blocks to function properly
+    if (filesystem_config.block_count < 4)
     {
-        LOG("Reformatting filesystem");
-        check_error(lfs_format(&filesystem, &filesystem_config));
-        check_error(lfs_mount(&filesystem, &filesystem_config));
+        LOG("Filesystem disabled: insufficient flash space (%d blocks)",
+            filesystem_config.block_count);
+        filesystem_available = false;
+        // Still register the Lua library but operations will fail gracefully
+    }
+    else
+    {
+        int file_mount_error = lfs_mount(&filesystem, &filesystem_config);
+
+        if (reformat || file_mount_error)
+        {
+            LOG("Reformatting filesystem");
+            check_error(lfs_format(&filesystem, &filesystem_config));
+            check_error(lfs_mount(&filesystem, &filesystem_config));
+        }
+        filesystem_available = true;
     }
 
     luaL_newmetatable(L, LUA_FILEHANDLE);

@@ -26,6 +26,7 @@
 #include <math.h>
 #include <stdint.h>
 #include "bluetooth.h"
+#include "boot_safety.h"
 #include "camera_configuration.h"
 #include "compression.h"
 #include "display_configuration.h"
@@ -36,6 +37,7 @@
 #include "nrf_clock.h"
 #include "nrf_gpio.h"
 #include "nrf_sdm.h"
+#include "nrf_soc.h"
 #include "nrf.h"
 #include "nrfx_gpiote.h"
 #include "nrfx_log.h"
@@ -44,9 +46,38 @@
 #include "pinout.h"
 #include "spi.h"
 #include "watchdog.h"
+// TF Lite Micro
+#include "tflm_wrapper.h"
+#include "tensorflow/lite/micro/cortex_m_generic/debug_log_callback.h"
 
 bool not_real_hardware = false;
 bool stay_awake = false;
+
+// Linker symbols for heap bounds
+extern char __heap_start;
+extern char __heap_end;
+
+// Get approximate free heap by checking current break
+static void log_memory_stats(void)
+{
+    uint32_t heap_size = (uint32_t)&__heap_end - (uint32_t)&__heap_start;
+
+    // Note: This gives total heap size, not available memory
+    // To get actual free memory would require malloc implementation details
+    LOG("Heap: start=%p end=%p size=%lu bytes",
+        &__heap_start, &__heap_end, (unsigned long)heap_size);
+
+    // Stack pointer gives current stack usage
+    uint32_t sp;
+    __asm volatile ("mov %0, sp" : "=r" (sp));
+    LOG("Stack pointer: %p", (void*)sp);
+}
+
+// TFLM debug log callback - routes MicroPrintf output to RTT console
+static void tflm_debug_log_callback(const char* s)
+{
+    LOG("[TFLM]: %s", s);
+}
 
 static void set_power_rails(bool enable)
 {
@@ -220,12 +251,17 @@ static void hardware_setup()
         spi_configure();
     }
 
+    // Check if on development kit
+    #ifdef DEV_KIT_BUILD
+      not_real_hardware = true;
+    #endif
+
     // Scan the PMIC & IMU for their chip IDs. Camera is checked later
     {
         i2c_response_t magnetometer_id = i2c_read(MAGNETOMETER, 0x0F, 0xFF);
         i2c_response_t pmic_id = i2c_read(PMIC, 0x14, 0x0F);
 
-        if (magnetometer_id.fail && pmic_id.fail)
+        if ((magnetometer_id.fail && pmic_id.fail) || not_real_hardware)
         {
             LOG("Running on fake hardware");
             not_real_hardware = true;
@@ -467,9 +503,62 @@ int main(void)
 {
     LOG("Frame firmware " BUILD_VERSION " (" GIT_COMMIT ")");
 
+    // Add boot safety mechanism to protect glasses
+    boot_safety_init();
+
+    // Register TFLM debug log callback to route to RTT console
+    RegisterDebugLogCallback(tflm_debug_log_callback);
+
     hardware_setup();
 
     bluetooth_setup();
+
+    // Log memory stats on development kit
+    #ifdef DEV_KIT_BUILD
+        log_memory_stats();
+    #endif
+
+    // Initialize ML model based on selected experiment
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+    LOG("Initializing FOMO object detection model...");
+    tflm_status_t ml_result = fomo_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: FOMO model initialization failed!");
+    } else {
+        LOG("FOMO model initialized successfully!");
+    }
+#elif defined(ML_EXPERIMENT_VWW)
+    LOG("Initializing Person Detection model...");
+    tflm_status_t ml_result = person_detect_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Person detection model initialization failed!");
+    } else {
+        LOG("Person detection model initialized successfully!");
+    }
+#elif defined(ML_EXPERIMENT_VWW_RGB)
+    LOG("Initializing Person Detection RGB model...");
+    tflm_status_t ml_result = person_detect_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Person detection RGB model initialization failed!");
+    } else {
+        LOG("Person detection RGB model initialized successfully!");
+    }
+#elif defined(ML_EXPERIMENT_HELLO_WORLD)
+    LOG("Initializing Hello World float model...");
+    tflm_status_t ml_result = tflm_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Hello World float model initialization failed!");
+    } else {
+        LOG("Hello World float model initialized successfully!");
+    }
+    LOG("Initializing Hello World int8 model...");
+    ml_result = tflm_initialize_int8();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Hello World int8 model initialization failed!");
+    } else {
+        LOG("Hello World int8 model initialized successfully!");
+    }
+#endif
 
     while (1)
     {

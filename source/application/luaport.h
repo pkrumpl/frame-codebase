@@ -38,6 +38,8 @@ void lua_write_to_repl(uint8_t *buffer, uint8_t length);
 
 void lua_break_signal_interrupt(void);
 
+float generate_random_test_value();
+
 void run_lua(bool is_paired);
 
 int show_pairing_screen(bool is_paired, bool is_update);

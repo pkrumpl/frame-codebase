@@ -2,8 +2,19 @@
     "configurations": [
         {
             "name": "frame-codebase",
+            "intelliSenseMode": "gcc-arm",
             "cStandard": "gnu17",
             "cppStandard": "gnu++14",
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
+                "path": [
+                    "${workspaceFolder}/source/**",
+                    "${workspaceFolder}/libraries/lua",
+                    "${workspaceFolder}/libraries/nrfx/drivers/include",
+                    "${workspaceFolder}/libraries/softdevice/include"
+                ]
+            },
             "includePath": [
                 "libraries/cmsis/CMSIS/Core/Include",
                 "libraries/littlefs",
@@ -19,6 +30,13 @@
                 "libraries/segger",
                 "libraries/softdevice/include",
                 "libraries/softdevice/include/nrf52",
+                "libraries/tflm",
+                "libraries/tflm/examples/hello_world",
+                "libraries/tflm/third_party/flatbuffers/include",
+                "libraries/tflm/third_party/gemmlowp",
+                "libraries/tflm/third_party/kissfft",
+                "libraries/tflm/third_party/ruy",
+                "libraries/tjpgd",
                 "source",
                 "source/application",
                 "source/application/lua_libraries",
@@ -41,6 +59,22 @@
                 "SOFTDEVICE_PRESENT",
                 "TEST_FREQUENCY=80",
                 "TEST_POWER=8",
+                // TensorFlow Lite Micro defines
+                "TF_LITE_STATIC_MEMORY",
+                "TF_LITE_DISABLE_X86_NEON",
+                "TF_LITE_STRIP_ERROR_STRINGS",
+                // Picolibc compatibility defines for TFLM
+                "_READ_WRITE_RETURN_TYPE=_ssize_t",
+                "_READ_WRITE_BUFSIZE_TYPE=int",
+                "_Thread_local=thread_local",
+                "__malloc_like=",
+                "__result_use_check=",
+                // Dev Kit build flag
+                "DEV_KIT_BUILD=1",
+                "FRAME_DISABLE_MICROPHONE",
+                // ML Experiment selection (change to match config.mk)
+                // Options: ML_EXPERIMENT_VWW, ML_EXPERIMENT_VWW_RGB, ML_EXPERIMENT_FOMO_BEER_CAN, ML_EXPERIMENT_HELLO_WORLD
+                "ML_EXPERIMENT_VWW_RGB"
             ]
         }
     ],
