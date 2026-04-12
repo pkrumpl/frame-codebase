@@ -30,3 +30,7 @@ production/frame-firmware-*.hex
 
 # Claude
 .claude
+CLAUDE.md
+
+# Specific files
+flash_report.html

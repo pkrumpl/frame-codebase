@@ -1,6 +1,9 @@
 """
-Person detection benchmark test - runs local inference without Bluetooth data transfer.
+VWW Experiment - Person Detection Benchmark
+
+Runs local inference without Bluetooth data transfer.
 Measures inference timing over multiple iterations.
+Requires: ML_EXPERIMENT=VWW build flashed to Frame.
 """
 
 import asyncio
@@ -60,7 +63,26 @@ async def run_benchmark(iterations: int = 10):
         await asyncio.sleep(0.2)
         await b.send_lua("print('Avg: '.._r.avg_time_ms..' ms/frame')")
         await asyncio.sleep(0.5)
-        print("=========================")
+
+        # Print detailed timing breakdown
+        print("\n--- TIMING BREAKDOWN (total ms) ---")
+        await b.send_lua("print('memset:     '.._r.memset_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('capture:    '.._r.capture_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('wait_ready: '.._r.wait_ready_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('read_jpeg:  '.._r.read_jpeg_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('decode:     '.._r.decode_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('upscale:    '.._r.upscale_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('inference:  '.._r.inference_ms..' ms')")
+        await asyncio.sleep(0.2)
+        await b.send_lua("print('display:    '.._r.display_ms..' ms')")
+        await asyncio.sleep(0.5)
+        print("===================================")
 
     except Exception as e:
         print(f"Error during benchmark: {e}")

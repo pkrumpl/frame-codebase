@@ -28,6 +28,18 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD)
 $(info BUILD_VERSION is $(BUILD_VERSION))
 $(info GIT_COMMIT is $(GIT_COMMIT))
 
+# Include local config if it exists
+-include config.mk
+
+# ML Experiment selection - default to VWW if not set
+ML_EXPERIMENT ?= VWW
+$(info ML_EXPERIMENT is $(ML_EXPERIMENT))
+
+# Validate ML_EXPERIMENT value
+ifeq ($(filter $(ML_EXPERIMENT),VWW VWW_RGB FOMO_BEER_CAN HELLO_WORLD),)
+$(error Invalid ML_EXPERIMENT value '$(ML_EXPERIMENT)'. Valid values: VWW, VWW_RGB, FOMO_BEER_CAN, HELLO_WORLD)
+endif
+
 LIBRARIES := ../../libraries
 BUILD := ../../build
 
@@ -51,7 +63,7 @@ C_FILES += \
 	watchdog.c \
 	lua_libraries/camera.c \
 	lua_libraries/display.c \
-	lua_libraries/experiment.c \
+	lua_libraries/experiment_common.c \
 	lua_libraries/file.c \
 	lua_libraries/imu.c \
 	lua_libraries/led.c \
@@ -176,7 +188,26 @@ C_FILES += \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_fully_connected_get_buffer_sizes_s16.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/FullyConnectedFunctions/arm_vector_sum_s8.c \
 	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/NNSupportFunctions/arm_nn_vec_mat_mult_t_per_ch_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_max_pool_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PoolingFunctions/arm_max_pool_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_add_s8.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/BasicMathFunctions/arm_elementwise_add_s16.c \
+	$(LIBRARIES)/tflm/third_party/cmsis_nn/Source/PadFunctions/arm_pad_s8.c \
 	$(LIBRARIES)/tjpgd/tjpgd.c \
+
+# Add selected experiment file based on ML_EXPERIMENT
+ifeq ($(ML_EXPERIMENT),VWW)
+C_FILES += lua_libraries/experiment_vww.c
+endif
+ifeq ($(ML_EXPERIMENT),VWW_RGB)
+C_FILES += lua_libraries/experiment_vww_rgb.c
+endif
+ifeq ($(ML_EXPERIMENT),FOMO_BEER_CAN)
+C_FILES += lua_libraries/experiment_fomo.c
+endif
+ifeq ($(ML_EXPERIMENT),HELLO_WORLD)
+C_FILES += lua_libraries/experiment_hello_world.c
+endif
 
 # C++ source files (add your C++ files here)
 # Note: common.cc files are handled with explicit rules to avoid naming conflicts
@@ -230,7 +261,20 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/add.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/add_common.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pad.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pad_common.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations.cc \
+	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations_common.cc
+
+# Add HELLO_WORLD model data files
+ifeq ($(ML_EXPERIMENT),HELLO_WORLD)
+CPP_FILES += \
+	$(LIBRARIES)/tflm/examples/hello_world/models/hello_world_float_model_data.cc \
+	$(LIBRARIES)/tflm/examples/hello_world/models/hello_world_int8_model_data.cc
+endif
 
 # Common header file paths (used by both C and C++)
 COMMON_INCLUDE_FLAGS := \
@@ -253,6 +297,7 @@ COMMON_INCLUDE_FLAGS := \
 	-I$(LIBRARIES)/segger \
 	-I$(LIBRARIES)/softdevice/include \
 	-I$(LIBRARIES)/tflm \
+	-I$(LIBRARIES)/tflm/examples/hello_world \
 	-I$(LIBRARIES)/tflm/third_party/flatbuffers/include \
 	-I$(LIBRARIES)/tflm/third_party/gemmlowp \
 	-I$(LIBRARIES)/tflm/third_party/ruy \
@@ -294,6 +339,9 @@ ifdef DEV_KIT
 $(info Including DEV_KIT_BUILD flag for Development Kit build...)
 COMMON_FLAGS += -DDEV_KIT_BUILD
 endif
+
+# Add ML experiment define
+COMMON_FLAGS += -DML_EXPERIMENT_$(ML_EXPERIMENT)
 
 #* Note: Disable microphone functionality to save RAM
 COMMON_FLAGS += -DFRAME_DISABLE_MICROPHONE
@@ -398,6 +446,7 @@ VPATH := . .. lua_libraries \
          $(LIBRARIES)/tflm/tensorflow/lite/kernels \
          $(LIBRARIES)/tflm/tensorflow/lite/kernels/internal \
          $(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/schema \
+         $(LIBRARIES)/tflm/examples/hello_world/models \
          $(LIBRARIES)/tjpgd
 
 # Default target

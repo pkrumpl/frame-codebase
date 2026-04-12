@@ -518,23 +518,39 @@ int main(void)
         log_memory_stats();
     #endif
 
-    // Initialize FOMO object detection model (DISABLED - using person detection instead)
-    // LOG("Initializing FOMO object detection model...");
-    // tflm_status_t fomo_result = fomo_initialize();
-    // if (fomo_result != TFLM_OK) {
-    //     LOG("ERROR: FOMO model initialization failed!");
-    // } else {
-    //     LOG("FOMO model initialized successfully!");
-    // }
-
-    // Initialize Person Detection model
+    // Initialize ML model based on selected experiment
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+    LOG("Initializing FOMO object detection model...");
+    tflm_status_t ml_result = fomo_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: FOMO model initialization failed!");
+    } else {
+        LOG("FOMO model initialized successfully!");
+    }
+#elif defined(ML_EXPERIMENT_VWW)
     LOG("Initializing Person Detection model...");
-    tflm_status_t person_result = person_detect_initialize();
-    if (person_result != TFLM_OK) {
+    tflm_status_t ml_result = person_detect_initialize();
+    if (ml_result != TFLM_OK) {
         LOG("ERROR: Person detection model initialization failed!");
     } else {
         LOG("Person detection model initialized successfully!");
     }
+#elif defined(ML_EXPERIMENT_HELLO_WORLD)
+    LOG("Initializing Hello World float model...");
+    tflm_status_t ml_result = tflm_initialize();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Hello World float model initialization failed!");
+    } else {
+        LOG("Hello World float model initialized successfully!");
+    }
+    LOG("Initializing Hello World int8 model...");
+    ml_result = tflm_initialize_int8();
+    if (ml_result != TFLM_OK) {
+        LOG("ERROR: Hello World int8 model initialization failed!");
+    } else {
+        LOG("Hello World int8 model initialized successfully!");
+    }
+#endif
 
     while (1)
     {

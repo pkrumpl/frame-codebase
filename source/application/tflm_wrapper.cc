@@ -29,14 +29,18 @@ void* calloc(size_t, size_t);
 // Include TFLM headers
 #include "tensorflow/lite/core/c/common.h"
 
-// Enable/disable FOMO model (disable to save memory when using person detection)
-#define ENABLE_FOMO 0
-
-#if ENABLE_FOMO
-#include "models/fomo_beer_can_small_model_data.h"
+// Include model data based on selected experiment
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+#include "models/fomo_beer_can.h"
+#elif defined(ML_EXPERIMENT_VWW)
+#include "models/person_detect.h"
+#elif defined(ML_EXPERIMENT_VWW_RGB)
+#include "models/person_detect_rgb.h"
+#elif defined(ML_EXPERIMENT_HELLO_WORLD)
+#include "examples/hello_world/models/hello_world_float_model_data.h"
+#include "examples/hello_world/models/hello_world_int8_model_data.h"
 #endif
 
-#include "models/person_detect.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -56,7 +60,7 @@ extern "C" {
  * FOMO Object Detection Model Implementation
  *============================================================================*/
 
-#if ENABLE_FOMO
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
 
 // FOMO model requires these ops
 using FomoOpResolver = tflite::MicroMutableOpResolver<9>;
@@ -95,7 +99,7 @@ tflm_status_t fomo_initialize(void) {
 
   tflite::InitializeTarget();
 
-  const tflite::Model* model = ::tflite::GetModel(fomo_beer_can_small_model);
+  const tflite::Model* model = ::tflite::GetModel(fomo_beer_can_model);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("FOMO model schema version mismatch! Expected %d, got %d",
                 TFLITE_SCHEMA_VERSION, model->version());
@@ -210,28 +214,13 @@ bool fomo_is_initialized(void) {
   return fomo_initialized;
 }
 
-#else  // !ENABLE_FOMO
-
-// Stub functions when FOMO is disabled
-tflm_status_t fomo_initialize(void) {
-  return TFLM_ERROR;
-}
-
-tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid) {
-  (void)input_grayscale;
-  (void)output_grid;
-  return TFLM_ERROR;
-}
-
-bool fomo_is_initialized(void) {
-  return false;
-}
-
-#endif  // ENABLE_FOMO
+#endif  // ML_EXPERIMENT_FOMO_BEER_CAN
 
 /*=============================================================================
  * Person Detection Model Implementation
  *============================================================================*/
+
+#if defined(ML_EXPERIMENT_VWW)
 
 // Person detect model requires 7 ops for larger models
 using PersonDetectOpResolver = tflite::MicroMutableOpResolver<7>;
@@ -373,5 +362,217 @@ tflm_status_t person_detect_infer(const uint8_t* input_grayscale, int8_t* output
 bool person_detect_is_initialized(void) {
   return person_detect_initialized;
 }
+
+#endif  // ML_EXPERIMENT_VWW || ML_EXPERIMENT_VWW_RGB
+
+/*=============================================================================
+ * Hello World Model Implementation
+ *============================================================================*/
+
+#if defined(ML_EXPERIMENT_HELLO_WORLD)
+
+namespace {
+using HelloWorldOpResolver = tflite::MicroMutableOpResolver<1>;
+
+TfLiteStatus RegisterHelloWorldOps(HelloWorldOpResolver& op_resolver) {
+  TF_LITE_ENSURE_STATUS(op_resolver.AddFullyConnected());
+  return kTfLiteOk;
+}
+
+// Float model storage
+constexpr int kTensorArenaSize = 3000;
+uint8_t tensor_arena[kTensorArenaSize] __attribute__((aligned(16)));
+tflite::MicroInterpreter* interpreter = nullptr;
+HelloWorldOpResolver* op_resolver = nullptr;
+
+// Int8 model storage
+constexpr int kTensorArenaSizeInt8 = 2500;
+uint8_t tensor_arena_int8[kTensorArenaSizeInt8] __attribute__((aligned(16)));
+tflite::MicroInterpreter* interpreter_int8 = nullptr;
+HelloWorldOpResolver* op_resolver_int8 = nullptr;
+
+// Cached quantization parameters for int8 model
+struct QuantizationParams {
+  float input_scale;
+  int32_t input_zero_point;
+  float output_scale;
+  int32_t output_zero_point;
+  float input_scale_inv;
+} int8_quant_params = {0};
+
+}  // namespace
+
+/**
+ * Initialize the float hello_world model
+ */
+tflm_status_t tflm_initialize(void) {
+  MicroPrintf("Initializing TFLM hello_world float model...");
+#ifdef CMSIS_NN
+  MicroPrintf("CMSIS-NN optimized kernels enabled");
+#else
+  MicroPrintf("Using reference kernels (CMSIS-NN not enabled)");
+#endif
+
+  tflite::InitializeTarget();
+
+  const tflite::Model* model = ::tflite::GetModel(g_hello_world_float_model_data);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    MicroPrintf("Float model schema version mismatch!");
+    return TFLM_ERROR;
+  }
+
+  static HelloWorldOpResolver static_op_resolver;
+  op_resolver = &static_op_resolver;
+
+  TfLiteStatus status = RegisterHelloWorldOps(*op_resolver);
+  if (status != kTfLiteOk) {
+    MicroPrintf("Failed to register ops for float model");
+    return TFLM_ERROR;
+  }
+
+  static tflite::MicroInterpreter static_interpreter(
+      model, *op_resolver, tensor_arena, kTensorArenaSize);
+  interpreter = &static_interpreter;
+
+  status = interpreter->AllocateTensors();
+  if (status != kTfLiteOk) {
+    MicroPrintf("AllocateTensors failed for float model");
+    return TFLM_ERROR;
+  }
+
+  MicroPrintf("Float model initialized successfully!");
+  return TFLM_OK;
+}
+
+/**
+ * Run inference on float model
+ */
+tflm_status_t tflm_infer(float input, float* output) {
+  if (interpreter == nullptr) {
+    MicroPrintf("ERROR: Float model not initialized");
+    return TFLM_ERROR;
+  }
+
+  interpreter->input(0)->data.f[0] = input;
+
+  TfLiteStatus status = interpreter->Invoke();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Float model invoke failed");
+    return TFLM_ERROR;
+  }
+
+  *output = interpreter->output(0)->data.f[0];
+  return TFLM_OK;
+}
+
+/**
+ * Initialize the int8 quantized model
+ */
+tflm_status_t tflm_initialize_int8(void) {
+  MicroPrintf("Initializing TFLM hello_world int8 model...");
+
+  tflite::InitializeTarget();
+
+  const tflite::Model* model = ::tflite::GetModel(g_hello_world_int8_model_data);
+  if (model->version() != TFLITE_SCHEMA_VERSION) {
+    MicroPrintf("Int8 model schema version mismatch!");
+    return TFLM_ERROR;
+  }
+
+  static HelloWorldOpResolver static_op_resolver_int8;
+  op_resolver_int8 = &static_op_resolver_int8;
+
+  TfLiteStatus status = RegisterHelloWorldOps(*op_resolver_int8);
+  if (status != kTfLiteOk) {
+    MicroPrintf("Failed to register ops for int8 model");
+    return TFLM_ERROR;
+  }
+
+  static tflite::MicroInterpreter static_interpreter_int8(
+      model, *op_resolver_int8, tensor_arena_int8, kTensorArenaSizeInt8);
+  interpreter_int8 = &static_interpreter_int8;
+
+  status = interpreter_int8->AllocateTensors();
+  if (status != kTfLiteOk) {
+    MicroPrintf("AllocateTensors failed for int8 model");
+    return TFLM_ERROR;
+  }
+
+  // Cache quantization parameters
+  TfLiteTensor* input_tensor = interpreter_int8->input(0);
+  TfLiteTensor* output_tensor = interpreter_int8->output(0);
+
+  int8_quant_params.input_scale = input_tensor->params.scale;
+  int8_quant_params.input_zero_point = input_tensor->params.zero_point;
+  int8_quant_params.output_scale = output_tensor->params.scale;
+  int8_quant_params.output_zero_point = output_tensor->params.zero_point;
+  int8_quant_params.input_scale_inv = 1.0f / int8_quant_params.input_scale;
+
+  MicroPrintf("Int8 model initialized successfully!");
+  return TFLM_OK;
+}
+
+/**
+ * Run inference on int8 model with automatic quantization
+ */
+tflm_status_t tflm_infer_int8(float input, float* output) {
+  if (interpreter_int8 == nullptr) {
+    MicroPrintf("ERROR: Int8 model not initialized");
+    return TFLM_ERROR;
+  }
+
+  TfLiteTensor* input_tensor = interpreter_int8->input(0);
+  TfLiteTensor* output_tensor = interpreter_int8->output(0);
+
+  // Quantize input
+  float input_scaled = input * int8_quant_params.input_scale_inv + int8_quant_params.input_zero_point;
+  int32_t input_quantized_32 = static_cast<int32_t>(input_scaled + (input_scaled >= 0 ? 0.5f : -0.5f));
+  input_quantized_32 = (input_quantized_32 < -128) ? -128 : input_quantized_32;
+  input_quantized_32 = (input_quantized_32 > 127) ? 127 : input_quantized_32;
+  input_tensor->data.int8[0] = static_cast<int8_t>(input_quantized_32);
+
+  // Run inference
+  TfLiteStatus status = interpreter_int8->Invoke();
+  if (status != kTfLiteOk) {
+    MicroPrintf("Int8 model invoke failed");
+    return TFLM_ERROR;
+  }
+
+  // Dequantize output
+  int8_t output_quantized = output_tensor->data.int8[0];
+  *output = static_cast<float>(output_quantized - int8_quant_params.output_zero_point) * int8_quant_params.output_scale;
+
+  return TFLM_OK;
+}
+
+/**
+ * Get float model info
+ */
+tflm_status_t tflm_get_float_model_info(tflm_model_info_t* info) {
+  if (info == nullptr) return TFLM_ERROR;
+
+  info->type = TFLM_MODEL_FLOAT;
+  info->model_size_bytes = g_hello_world_float_model_data_size;
+  info->arena_size_bytes = kTensorArenaSize;
+  info->initialized = (interpreter != nullptr);
+
+  return TFLM_OK;
+}
+
+/**
+ * Get int8 model info
+ */
+tflm_status_t tflm_get_int8_model_info(tflm_model_info_t* info) {
+  if (info == nullptr) return TFLM_ERROR;
+
+  info->type = TFLM_MODEL_INT8;
+  info->model_size_bytes = g_hello_world_int8_model_data_size;
+  info->arena_size_bytes = kTensorArenaSizeInt8;
+  info->initialized = (interpreter_int8 != nullptr);
+
+  return TFLM_OK;
+}
+
+#endif  // ML_EXPERIMENT_HELLO_WORLD
 
 } // extern "C"

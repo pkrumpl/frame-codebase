@@ -1,6 +1,9 @@
 """
-Tests the FOMO object detection model on Frame.
-Receives grayscale image data and predictions, displays results with detection overlays.
+FOMO Experiment - Single Object Detection
+
+Runs FOMO object detection model once, receives grayscale image and predictions,
+displays results with detection overlays.
+Requires: ML_EXPERIMENT=FOMO_BEER_CAN build flashed to Frame.
 """
 
 import asyncio
@@ -9,7 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from frameutils import Bluetooth
 
-# Image dimensions (must match OUTPUT_SIZE in experiment.c)
+# Image dimensions (must match OUTPUT_SIZE in experiment_fomo.c)
 IMAGE_WIDTH = 64
 IMAGE_HEIGHT = 64
 EXPECTED_IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT  # 4096
@@ -46,9 +49,9 @@ def data_handler(data: bytes):
     Note: frameutils already stripped the 0x01 flag byte before calling this handler.
 
     Protocol:
-        [IMAGE DATA]     9216 bytes
+        [IMAGE DATA]     4096 bytes
         [SEPARATOR]      0xFE 0xFE
-        [PREDICTIONS]    432 bytes
+        [PREDICTIONS]    192 bytes
         [END MARKER]     0xFF 0xFF 0x00 0x00
     """
     global received_image, received_predictions, current_state, transfer_complete
@@ -82,7 +85,7 @@ def print_handler(s: str):
 
 
 def parse_predictions(pred_data: bytes) -> np.ndarray:
-    """Parse the 432 bytes of int8 predictions into a 12x12x3 grid."""
+    """Parse the prediction bytes into a grid."""
     if len(pred_data) < EXPECTED_PRED_BYTES:
         print(f"Warning: Only got {len(pred_data)} of {EXPECTED_PRED_BYTES} prediction bytes")
         # Pad with zeros
@@ -90,7 +93,7 @@ def parse_predictions(pred_data: bytes) -> np.ndarray:
 
     # Convert to int8 numpy array
     pred_array = np.frombuffer(pred_data[:EXPECTED_PRED_BYTES], dtype=np.int8)
-    # Reshape to [12, 12, 3]
+    # Reshape to [8, 8, 3]
     pred_grid = pred_array.reshape((GRID_SIZE, GRID_SIZE, NUM_CLASSES))
     return pred_grid
 
@@ -99,7 +102,7 @@ def find_detections(pred_grid: np.ndarray, threshold: int = DETECTION_THRESHOLD)
     """Find all detections above the threshold.
 
     Args:
-        pred_grid: 12x12x3 int8 array
+        pred_grid: 8x8x3 int8 array
         threshold: int8 threshold value
 
     Returns:
