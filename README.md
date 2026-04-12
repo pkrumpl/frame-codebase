@@ -8,6 +8,14 @@ By embedding TFLM into the firmware itself, the glasses can **run lightweight ma
 
 This project is **experimental** and intended for developers exploring how TFLM can be deployed directly on the Frame hardware. If you're looking for the standard firmware or general documentation, please visit the official Brilliant Labs [documentation](https://docs.brilliant.xyz).
 
+## 🎓 Academic Context
+
+This work is part of a Master's Thesis at [Graz University of Technology (TU Graz)](https://www.tugraz.at), conducted within the [Embedded Learning and Sensing Systems (ELSS)](https://www.tugraz.at/arbeitsgruppen/iti-teams/elss/team-contact) group at the Institute of Technical Informatics.
+
+The thesis is supervised by Assoc.Prof. Olga Saukh, who leads the ELSS group, with co-supervision from Dong Wang and Francesco Corti. The group studies how to run advanced AI models on devices where every kilobyte and milliwatt matters, focusing on making deep learning work on mobile and embedded devices like smartphones or wearables. Data privacy and environmental sustainability are important aspects of their research.
+
+<a href="https://www.tugraz.at"><img src="docs/img/TU_Graz.png" alt="TU Graz" height="60"></a>&nbsp;&nbsp;&nbsp;&nbsp;<a href="https://www.tugraz.at/arbeitsgruppen/iti-teams/elss/team-contact"><img src="docs/img/ELSS_logo.png" alt="ELSS Group" height="60"></a>
+
 ## 🔬 ML Experiments
 
 This fork serves as a testbed to explore what's possible with on-device machine learning on the Frame glasses. The goal is to evaluate different ML use cases and measure their performance on the constrained hardware (Cortex-M4F with 256 KB RAM).
