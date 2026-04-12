@@ -31,6 +31,7 @@
                 "libraries/softdevice/include",
                 "libraries/softdevice/include/nrf52",
                 "libraries/tflm",
+                "libraries/tflm/examples/hello_world",
                 "libraries/tflm/third_party/flatbuffers/include",
                 "libraries/tflm/third_party/gemmlowp",
                 "libraries/tflm/third_party/kissfft",
@@ -70,7 +71,10 @@
                 "__result_use_check=",
                 // Dev Kit build flag
                 "DEV_KIT_BUILD=1",
-                "FRAME_DISABLE_MICROPHONE"
+                "FRAME_DISABLE_MICROPHONE",
+                // ML Experiment selection (change to match config.mk)
+                // Options: ML_EXPERIMENT_VWW, ML_EXPERIMENT_VWW_RGB, ML_EXPERIMENT_FOMO_BEER_CAN, ML_EXPERIMENT_HELLO_WORLD
+                "ML_EXPERIMENT_HELLO_WORLD"
             ]
         }
     ],
