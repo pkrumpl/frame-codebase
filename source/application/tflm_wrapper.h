@@ -24,8 +24,10 @@ typedef enum {
 } tflm_status_t;
 
 /*=============================================================================
- * FOMO Object Detection Model API
+ * FOMO Object Detection Model API (only when ML_EXPERIMENT_FOMO_BEER_CAN)
  *============================================================================*/
+
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
 
 // FOMO model constants
 #define FOMO_INPUT_SIZE   4096   // 64x64 grayscale
@@ -53,9 +55,13 @@ tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid);
  */
 bool fomo_is_initialized(void);
 
+#endif /* ML_EXPERIMENT_FOMO_BEER_CAN */
+
 /*=============================================================================
- * Person Detection Model API
+ * Person Detection Model API (only when ML_EXPERIMENT_VWW or ML_EXPERIMENT_VWW_RGB)
  *============================================================================*/
+
+#if defined(ML_EXPERIMENT_VWW) || defined(ML_EXPERIMENT_VWW_RGB)
 
 // Person detect model constants
 #define PERSON_INPUT_WIDTH   96
@@ -84,6 +90,74 @@ tflm_status_t person_detect_infer(const uint8_t* input_grayscale, int8_t* output
  * @return true if initialized, false otherwise
  */
 bool person_detect_is_initialized(void);
+
+#endif /* ML_EXPERIMENT_VWW || ML_EXPERIMENT_VWW_RGB */
+
+/*=============================================================================
+ * Hello World Model API (only when ML_EXPERIMENT_HELLO_WORLD)
+ *============================================================================*/
+
+#if defined(ML_EXPERIMENT_HELLO_WORLD)
+
+/**
+ * Initialize the float hello_world model (must be called once before inference)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_initialize(void);
+
+/**
+ * Run inference on a single input value (float model)
+ * @param input Input value (angle in radians, typically 0 to 2*PI)
+ * @param output Pointer to store the predicted output (sine value)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_infer(float input, float* output);
+
+/**
+ * Initialize the int8 quantized model (separate from float model)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_initialize_int8(void);
+
+/**
+ * Run inference on the int8 quantized model
+ * Automatically handles quantization of input and dequantization of output
+ * @param input Input value (angle in radians, typically 0 to 2*PI)
+ * @param output Pointer to store the predicted output (sine value)
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_infer_int8(float input, float* output);
+
+/**
+ * Get model information
+ */
+typedef enum {
+    TFLM_MODEL_FLOAT,
+    TFLM_MODEL_INT8
+} tflm_model_type_t;
+
+typedef struct {
+    tflm_model_type_t type;
+    uint32_t model_size_bytes;
+    uint32_t arena_size_bytes;
+    bool initialized;
+} tflm_model_info_t;
+
+/**
+ * Get information about the float model
+ * @param info Pointer to store model information
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_get_float_model_info(tflm_model_info_t* info);
+
+/**
+ * Get information about the int8 model
+ * @param info Pointer to store model information
+ * @return TFLM_OK on success, TFLM_ERROR on failure
+ */
+tflm_status_t tflm_get_int8_model_info(tflm_model_info_t* info);
+
+#endif /* ML_EXPERIMENT_HELLO_WORLD */
 
 #ifdef __cplusplus
 }

@@ -74,7 +74,7 @@
                 "FRAME_DISABLE_MICROPHONE",
                 // ML Experiment selection (change to match config.mk)
                 // Options: ML_EXPERIMENT_VWW, ML_EXPERIMENT_VWW_RGB, ML_EXPERIMENT_FOMO_BEER_CAN, ML_EXPERIMENT_HELLO_WORLD
-                "ML_EXPERIMENT_HELLO_WORLD"
+                "ML_EXPERIMENT_VWW"
             ]
         }
     ],
