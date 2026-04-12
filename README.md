@@ -19,6 +19,38 @@ The thesis is supervised by Assoc.Prof. Olga Saukh, who leads the ELSS group, wi
   <a href="https://www.tugraz.at/arbeitsgruppen/iti-teams/elss/team-contact"><img src="docs/img/ELSS_logo.png" alt="ELSS Group" height="60"></a>
 </div>
 
+## 🔀 Key Differences from Original Firmware
+
+This fork modifies the original Frame firmware to enable on-device ML inference. The goal was to minimize changes to the original codebase while making necessary trade-offs to fit ML models within the hardware constraints (256 KB RAM, 824 KB available flash for application).
+
+### Memory Trade-offs
+
+| Change | Reason |
+|--------|--------|
+| Disabled microphone | `FRAME_DISABLE_MICROPHONE` compile flag to free up RAM |
+| Reduced file system | Smaller LittleFS allocation and reduced storage space for file system |
+| Static tensor arenas | Required for TFLM inference |
+
+### Build System Adaptations
+
+- **C++ support**: Added compilation rules for TFLM's C++ codebase
+- **CMSIS-NN integration**: ARM Cortex-M4 optimized kernels for neural network operations
+- **Embedded ML flags**: `-fno-rtti`, `-fno-exceptions`, `-DTF_LITE_STATIC_MEMORY`
+- **Experiment selection**: `config.mk` for build-time model selection
+
+### Boot Safety Mechanism
+
+A safety mechanism prevents the glasses from becoming unusable after a faulty firmware update:
+- Detects watchdog resets and consecutive boot failures
+- Automatically enters DFU mode after 5 failed boot attempts
+- Allows recovery via Bluetooth OTA update
+
+### New Components
+
+- `tflm_wrapper.cc/h`: C-compatible wrapper for TFLM C++ code
+- `lua_libraries/experiment_*.c`: Lua APIs for ML inference
+- `scripts/`: Memory analysis tools
+
 ## 🔬 ML Experiments
 
 This fork serves as a testbed to explore what's possible with on-device machine learning on the Frame glasses. The goal is to evaluate different ML use cases and measure their performance on the constrained hardware (Cortex-M4F with 256 KB RAM).
@@ -65,7 +97,7 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, manag
 4. Clone this repository and initialize the submodules:
 
     ```sh
-    git clone https://github.com/brilliantlabsAR/frame-codebase.git
+    git clone https://github.com/pkrumpl/frame-codebase.git
     cd frame-codebase
     git submodule update --init
     ```
@@ -77,6 +109,21 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, manag
     make erase-jlink   # Unlocks the flash protection if needed
     make flash-jlink
     ```
+
+### Deployment Options
+
+**Over-the-Air (OTA) Update via Bluetooth:**
+- Build a DFU package with `make release`
+- Use the Frame app or nRF Connect to upload the firmware
+- The glasses must be in DFU mode (hold button during power-on, or use `frame.update()` in Lua)
+
+**J-Link (Development):**
+- Direct flashing for development (see commands above)
+- Supports debugging with RTT logging
+
+**Boot Safety:**
+- If the firmware crashes repeatedly, the glasses automatically enter DFU mode
+- This prevents bricking and allows recovery via Bluetooth
 
 ## 🛠️ Debugging
 
@@ -96,6 +143,12 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, manag
 
 ## 🧮 Getting started with FPGA development
 
+> **Note:** The FPGA RTL was not modified for this thesis. The information below is from the original firmware documentation.
+
 The complete FPGA architecture is described in `docs/fpga-architecture.md`.
 
 The FPGA RTL is prebuilt and included in `fpga_application.h` for convenience. If you wish to modify the FPGA RTL, follow `docs/fpga-toolchain-setup.md` to rebuild the bitstream.
+
+## 🙏 Acknowledgments
+
+This project is based on the official [Frame firmware by Brilliant Labs](https://github.com/brilliantlabsAR/frame-codebase).
