@@ -6,7 +6,27 @@
 
 By embedding TFLM into the firmware itself, the glasses can **run lightweight machine learning models locally**, without needing a connected host device. This approach improves **reliability**, enables **real-time inference**, and reduces **latency** for ML-driven applications such as gesture recognition, sensor fusion, or low-power computer vision.
 
-This project is **experimental** and intended for developers exploring how TFLM can be deployed directly on the Frame hardware. If you’re looking for the standard firmware or general documentation, please visit the official Brilliant Labs [documentation](https://docs.brilliant.xyz).
+This project is **experimental** and intended for developers exploring how TFLM can be deployed directly on the Frame hardware. If you're looking for the standard firmware or general documentation, please visit the official Brilliant Labs [documentation](https://docs.brilliant.xyz).
+
+## 🔬 ML Experiments
+
+This fork serves as a testbed to explore what's possible with on-device machine learning on the Frame glasses. The goal is to evaluate different ML use cases and measure their performance on the constrained hardware (Cortex-M4F with 256 KB RAM).
+
+### Selecting an Experiment
+
+The active ML experiment is configured in `source/application/config.mk`:
+
+Simply change the `ML_EXPERIMENT` value and rebuild the firmware to switch between use cases:
+
+| Experiment       | Description                                      |
+|------------------|--------------------------------------------------|
+| `VWW`            | Visual Wake Words - person detection (grayscale) |
+| `VWW_RGB`        | Visual Wake Words - person detection (RGB input) |
+| `FOMO_BEER_CAN`  | Object detection using FOMO architecture         |
+
+### Benchmarks
+
+Performance benchmarks and results for each experiment are documented in [`docs/benchmarks/`](docs/benchmarks/) and will be expanded.
 
 ## 🧱 System architecture
 
