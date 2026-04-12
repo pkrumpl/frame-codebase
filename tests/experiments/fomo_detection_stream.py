@@ -1,17 +1,19 @@
 """
-Continuous object detection streaming - displays live video feed with detections.
+FOMO Experiment - Continuous Object Detection Stream
+
+Displays live video feed with detections.
 Runs autoexposure once at startup, then loops fast detection until Ctrl+C.
+Requires: ML_EXPERIMENT=FOMO_BEER_CAN build flashed to Frame.
 """
 
 import asyncio
 import signal
-import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from frameutils import Bluetooth
 
-# Image dimensions (must match OUTPUT_SIZE in experiment.c)
+# Image dimensions (must match OUTPUT_SIZE in experiment_fomo.c)
 IMAGE_WIDTH = 64
 IMAGE_HEIGHT = 64
 EXPECTED_IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT  # 4096

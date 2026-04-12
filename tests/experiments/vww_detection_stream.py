@@ -1,6 +1,9 @@
 """
-Person detection streaming - displays live video feed with classification.
+VWW Experiment - Person Detection Stream
+
+Displays live video feed with person detection classification.
 Runs autoexposure once at startup, then loops detection until Ctrl+C.
+Requires: ML_EXPERIMENT=VWW build flashed to Frame.
 """
 
 import asyncio
@@ -9,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from frameutils import Bluetooth
 
-# Image dimensions (must match OUTPUT_SIZE in experiment.c)
+# Image dimensions (must match OUTPUT_SIZE in experiment_vww.c)
 IMAGE_WIDTH = 96
 IMAGE_HEIGHT = 96
 EXPECTED_IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT  # 9216
