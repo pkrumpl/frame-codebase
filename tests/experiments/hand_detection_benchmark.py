@@ -19,7 +19,6 @@ CSV_FIELDS = [
     "hand_detections",
     "total_time_ms",
     "avg_time_ms",
-    "memset_ms",
     "capture_ms",
     "wait_ready_ms",
     "read_jpeg_ms",
@@ -75,7 +74,6 @@ def render_report(csv_line: str):
     print(f"Average per iter:     {values['avg_time_ms']} ms")
     print()
     print("Per-stage breakdown (total ms across all iterations):")
-    print(f"  memset:             {values['memset_ms']} ms")
     print(f"  camera capture:     {values['capture_ms']} ms")
     print(f"  wait image_ready:   {values['wait_ready_ms']} ms")
     print(f"  read JPEG:          {values['read_jpeg_ms']} ms")

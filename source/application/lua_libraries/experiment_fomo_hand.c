@@ -4,6 +4,10 @@
  * Object detection experiment using a FOMO model trained for hand detection.
  * Input: 96x96 RGB. Output: 8x8x2 (background, hand).
  * Compiled when ML_EXPERIMENT=FOMO_HAND_DETECTION is set.
+ *
+ * Memory pattern: buffers are allocated and freed sequentially based on
+ * lifetime so peak heap use stays below the sum of all working buffers.
+ * Peak during the upscale step is ~52 KB (temp 24 KB + rgb 27.6 KB).
  */
 
 #include <string.h>
@@ -29,13 +33,43 @@ extern const size_t test_jpeg_size;
 #endif
 
 /* Image dimensions */
-#define CAPTURE_SIZE     720
-#define SCALED_SIZE      90    /* After TJpgDec scale=3 (720/8=90) */
-#define OUT_DIM          96    /* ML input dimension (96x96) */
-#define NUM_CHANNELS     3     /* RGB */
+#define CAPTURE_SIZE      720
+#define SCALED_SIZE       90    /* After TJpgDec scale=3 (720/8=90) */
+#define OUT_DIM           96    /* ML input dimension (96x96) */
+#define NUM_CHANNELS      3     /* RGB */
 
-#define RGB_CAPTURE_BYTES  (SCALED_SIZE * SCALED_SIZE * NUM_CHANNELS)  /* 24,300 */
-#define RGB_OUTPUT_BYTES   (OUT_DIM * OUT_DIM * NUM_CHANNELS)          /* 27,648 */
+#define RGB_CAPTURE_BYTES (SCALED_SIZE * SCALED_SIZE * NUM_CHANNELS)  /* 24,300 */
+#define RGB_OUTPUT_BYTES  (OUT_DIM * OUT_DIM * NUM_CHANNELS)          /* 27,648 */
+
+/* JPEG cap == RGB_OUTPUT_BYTES because the JPEG is read into s_rgb_buffer
+ * (which is unused until upscale). 27,648 bytes is comfortably above the
+ * typical 720x720 MEDIUM JPEG size. */
+#define MAX_JPEG_SIZE     RGB_OUTPUT_BYTES
+#define BT_CHUNK_SIZE     200
+#define READ_CHUNK_SIZE   512
+
+/* The two large working buffers live in BSS rather than on the heap.
+ *   - They're needed on every inference call (streaming use case).
+ *   - Per-call malloc/free of buffers this large fragments the heap fast,
+ *     and Lua's own allocator activity already eats most of the heap.
+ *   - s_rgb_buffer is double-purposed: it holds the raw JPEG during
+ *     read+decode, then the final 96x96 RGB image after upscale. The
+ *     JPEG bytes are consumed by the decoder before upscale overwrites
+ *     them, so the reuse is safe.
+ * Static placement is contiguous at link time -> no allocator, no
+ * fragmentation, and no heap allocation in the hot path at all. */
+static uint8_t s_temp_buffer[RGB_CAPTURE_BYTES];  /* 24,300 B (decode dst) */
+static uint8_t s_rgb_buffer[RGB_OUTPUT_BYTES];    /* 27,648 B (jpeg src,
+                                                              then RGB) */
+
+/* Format current heap stats into buf. Suitable for inclusion in error
+ * messages so the failure mode is visible over Bluetooth. */
+static void heap_stats(int *out_free, int *out_frags)
+{
+    struct mallinfo mi = mallinfo();
+    if (out_free)  *out_free  = (int)mi.fordblks;
+    if (out_frags) *out_frags = (int)mi.ordblks;
+}
 
 /*-----------------------------------------------*/
 /* Hand Detection Overlay                        */
@@ -46,22 +80,14 @@ extern const size_t test_jpeg_size;
  * Single class: hand (drawn as a green dot per detected grid cell).
  * Edge indicators (left/right vertical bars) for detections outside the
  * display FOV.
- *
- * @param output_grid Pointer to FOMO_OUTPUT_SIZE int8 output grid (8x8x2)
  */
 static void draw_hand_detection_overlay(const int8_t *output_grid)
 {
     const int8_t DETECTION_THRESHOLD = -50;
 
-    /* Display dimensions */
     const uint16_t DISPLAY_W = 640;
     const uint16_t DISPLAY_H = 400;
 
-    /*
-     * FOV mapping: Camera sees ~56, display shows ~20 (center portion).
-     * The 8x8 grid covers the full camera FOV.
-     * Display FOV corresponds to roughly the center 4 cells.
-     */
     const int CENTER_START = 2;
     const int CENTER_END = 5;
     const int CENTER_COLS = CENTER_END - CENTER_START + 1;
@@ -70,11 +96,9 @@ static void draw_hand_detection_overlay(const int8_t *output_grid)
 
     const uint16_t SPRITE_SIZE = 24;
 
-    /* Edge indicator dimensions */
     const uint16_t LINE_WIDTH = 12;
     const uint16_t LINE_HEIGHT = 80;
 
-    /* Palette color for hand detection */
     const uint8_t HAND_COLOR = 10;  /* GREEN */
 
     /* 24x24 filled circle sprite (2-color, 1-bit): 576 pixels / 8 = 72 bytes */
@@ -165,26 +189,19 @@ static void draw_hand_detection_overlay(const int8_t *output_grid)
         if (py > DISPLAY_H - LINE_HEIGHT) py = DISPLAY_H - LINE_HEIGHT;
 
         size_t line_bytes = LINE_HEIGHT * 2;
-        uint8_t *line_data = malloc(line_bytes);
-        if (line_data) {
-            memset(line_data, 0xFF, line_bytes);
-
-            uint8_t meta[8] = {
-                (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
-                (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
-                0, LINE_WIDTH,
-                2,
-                HAND_COLOR
-            };
-
-            uint8_t *payload = malloc(8 + line_bytes);
-            if (payload) {
-                memcpy(payload, meta, 8);
-                memcpy(payload + 8, line_data, line_bytes);
-                spi_write(FPGA, 0x12, payload, 8 + line_bytes);
-                free(payload);
-            }
-            free(line_data);
+        uint8_t *payload = malloc(8 + line_bytes);
+        if (payload) {
+            payload[0] = (uint8_t)(px >> 8);
+            payload[1] = (uint8_t)(px & 0xFF);
+            payload[2] = (uint8_t)(py >> 8);
+            payload[3] = (uint8_t)(py & 0xFF);
+            payload[4] = 0;
+            payload[5] = LINE_WIDTH;
+            payload[6] = 2;
+            payload[7] = HAND_COLOR;
+            memset(payload + 8, 0xFF, line_bytes);
+            spi_write(FPGA, 0x12, payload, 8 + line_bytes);
+            free(payload);
         }
     }
 
@@ -194,26 +211,19 @@ static void draw_hand_detection_overlay(const int8_t *output_grid)
         if (py > DISPLAY_H - LINE_HEIGHT) py = DISPLAY_H - LINE_HEIGHT;
 
         size_t line_bytes = LINE_HEIGHT * 2;
-        uint8_t *line_data = malloc(line_bytes);
-        if (line_data) {
-            memset(line_data, 0xFF, line_bytes);
-
-            uint8_t meta[8] = {
-                (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
-                (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
-                0, LINE_WIDTH,
-                2,
-                HAND_COLOR
-            };
-
-            uint8_t *payload = malloc(8 + line_bytes);
-            if (payload) {
-                memcpy(payload, meta, 8);
-                memcpy(payload + 8, line_data, line_bytes);
-                spi_write(FPGA, 0x12, payload, 8 + line_bytes);
-                free(payload);
-            }
-            free(line_data);
+        uint8_t *payload = malloc(8 + line_bytes);
+        if (payload) {
+            payload[0] = (uint8_t)(px >> 8);
+            payload[1] = (uint8_t)(px & 0xFF);
+            payload[2] = (uint8_t)(py >> 8);
+            payload[3] = (uint8_t)(py & 0xFF);
+            payload[4] = 0;
+            payload[5] = LINE_WIDTH;
+            payload[6] = 2;
+            payload[7] = HAND_COLOR;
+            memset(payload + 8, 0xFF, line_bytes);
+            spi_write(FPGA, 0x12, payload, 8 + line_bytes);
+            free(payload);
         }
     }
 
@@ -222,15 +232,395 @@ static void draw_hand_detection_overlay(const int8_t *output_grid)
 }
 
 /*-----------------------------------------------*/
+/* Camera helpers                                */
+/*-----------------------------------------------*/
+
+#ifndef DEV_KIT_BUILD
+
+static void wake_camera(lua_State *L)
+{
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "power_save");
+    if (lua_isfunction(L, -1)) {
+        lua_pushboolean(L, 0);
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            return;
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 2);
+}
+
+static int autoexpose(lua_State *L, int iterations)
+{
+    for (int i = 0; i < iterations; i++) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "auto");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 3);
+            return -1;
+        }
+        lua_newtable(L);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            return -2;
+        }
+        lua_pop(L, 3);
+        nrfx_systick_delay_ms(100);
+        reload_watchdog(NULL, NULL);
+    }
+    return 0;
+}
+
+static int trigger_capture(lua_State *L)
+{
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "capture");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 3);
+        return -1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, CAPTURE_SIZE);
+    lua_setfield(L, -2, "resolution");
+    lua_pushstring(L, "MEDIUM");
+    lua_setfield(L, -2, "quality");
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        lua_pop(L, 3);
+        return -2;
+    }
+    lua_pop(L, 2);
+    return 0;
+}
+
+static bool wait_image_ready(lua_State *L)
+{
+    uint32_t timeout = 1000000;
+    bool ready = false;
+    while (timeout-- && !ready) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "image_ready");
+        if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            return false;
+        }
+        ready = lua_toboolean(L, -1);
+        lua_pop(L, 3);
+        if (!ready) {
+            nrfx_systick_delay_us(10);
+        }
+        reload_watchdog(NULL, NULL);
+    }
+    return ready;
+}
+
+/* Read the captured JPEG into jpeg_buffer (size MAX_JPEG_SIZE).
+ * Returns the number of bytes read, or 0 on error / empty / overflow.
+ * Diagnostic LOG lines distinguish the failure modes. */
+static size_t read_jpeg_into(lua_State *L, uint8_t *jpeg_buffer)
+{
+    size_t jpeg_size = 0;
+    while (jpeg_size < MAX_JPEG_SIZE) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "read");
+        lua_pushinteger(L, READ_CHUNK_SIZE);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            LOG("JPEG read: camera.read pcall failed at offset %u", (unsigned)jpeg_size);
+            lua_pop(L, 3);
+            return 0;
+        }
+
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 3);
+            break;
+        }
+
+        size_t chunk_len;
+        const char *chunk = lua_tolstring(L, -1, &chunk_len);
+        if (jpeg_size + chunk_len > MAX_JPEG_SIZE) {
+            /* JPEG larger than buffer. Drain remaining bytes so the next
+             * capture starts clean, then report. */
+            LOG("JPEG read: oversize. read %u bytes, next chunk %u, MAX_JPEG_SIZE=%u",
+                (unsigned)jpeg_size, (unsigned)chunk_len, (unsigned)MAX_JPEG_SIZE);
+            lua_pop(L, 3);
+            /* Drain */
+            while (true) {
+                lua_getglobal(L, "frame");
+                lua_getfield(L, -1, "camera");
+                lua_getfield(L, -1, "read");
+                lua_pushinteger(L, READ_CHUNK_SIZE);
+                if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+                    lua_pop(L, 3);
+                    break;
+                }
+                bool done = lua_isnil(L, -1);
+                lua_pop(L, 3);
+                if (done) break;
+                reload_watchdog(NULL, NULL);
+            }
+            return 0;
+        }
+        memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
+        jpeg_size += chunk_len;
+        lua_pop(L, 3);
+        reload_watchdog(NULL, NULL);
+    }
+    return jpeg_size;
+}
+
+#endif /* !DEV_KIT_BUILD */
+
+/*-----------------------------------------------*/
+/* Bluetooth send                                */
+/*-----------------------------------------------*/
+
+/* Block until the BT TX queue accepts the packet.
+ *
+ * bluetooth_send_data returns false on success and true on failure
+ * (typically NRF_ERROR_RESOURCES = TX queue full). Without retry the
+ * packet is silently dropped, which corrupts streaming transfers as soon
+ * as the queue fills - the symptom is "image short by N bytes" with N
+ * varying per frame. */
+static void bt_send_blocking(const uint8_t *data, size_t length)
+{
+    /* Cap at ~500 ms total wait so a disconnected/stuck link doesn't
+     * deadlock the experiment thread. */
+    for (int retries = 0; retries < 250; retries++) {
+        if (!bluetooth_send_data(data, length)) {
+            return;  /* success */
+        }
+        nrfx_systick_delay_ms(2);
+        reload_watchdog(NULL, NULL);
+    }
+    /* Drop and continue rather than block forever. */
+}
+
+/* Send the 96x96 RGB image (chunked) + separator + 8x8x2 prediction grid
+ * (chunked) + end marker. Mirrors the FOMO_BEER_CAN protocol. */
+static int send_image_and_predictions(const uint8_t *rgb_buffer,
+                                       const int8_t *output_grid)
+{
+    uint8_t *chunk_buffer = malloc(BT_CHUNK_SIZE + 1);
+    if (!chunk_buffer) {
+        return -1;
+    }
+    chunk_buffer[0] = 0x01;
+
+    size_t offset = 0;
+    while (offset < RGB_OUTPUT_BYTES) {
+        size_t chunk = (RGB_OUTPUT_BYTES - offset > BT_CHUNK_SIZE)
+                           ? BT_CHUNK_SIZE
+                           : (RGB_OUTPUT_BYTES - offset);
+        memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
+        bt_send_blocking(chunk_buffer, chunk + 1);
+        offset += chunk;
+        /* Throttle: NRF_SUCCESS only means "queued"; the radio still
+         * needs time to actually transmit. Without this delay packets
+         * pile up faster than the radio can drain them and get dropped
+         * at the link layer, even though sd_ble_gatts_hvx accepted them.
+         * Matches VWW_RGB's empirically-tuned cadence. */
+        nrfx_systick_delay_ms(20);
+        reload_watchdog(NULL, NULL);
+    }
+
+    nrfx_systick_delay_ms(50);
+    uint8_t separator[3] = {0x01, 0xFE, 0xFE};
+    bt_send_blocking(separator, 3);
+
+    nrfx_systick_delay_ms(50);
+    offset = 0;
+    while (offset < FOMO_OUTPUT_SIZE) {
+        size_t chunk = (FOMO_OUTPUT_SIZE - offset > BT_CHUNK_SIZE)
+                           ? BT_CHUNK_SIZE
+                           : (FOMO_OUTPUT_SIZE - offset);
+        chunk_buffer[0] = 0x01;
+        memcpy(chunk_buffer + 1, output_grid + offset, chunk);
+        bt_send_blocking(chunk_buffer, chunk + 1);
+        offset += chunk;
+        nrfx_systick_delay_ms(20);
+        reload_watchdog(NULL, NULL);
+    }
+
+    nrfx_systick_delay_ms(100);
+    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+    bt_send_blocking(end_marker, 5);
+
+    free(chunk_buffer);
+    return 0;
+}
+
+/* Send only the 96x96 RGB image + end marker. No separator, no predictions.
+ * Used by send_image() for capture-pipeline isolation testing. */
+static int send_image_only(const uint8_t *rgb_buffer)
+{
+    uint8_t *chunk_buffer = malloc(BT_CHUNK_SIZE + 1);
+    if (!chunk_buffer) {
+        return -1;
+    }
+    chunk_buffer[0] = 0x01;
+
+    size_t offset = 0;
+    while (offset < RGB_OUTPUT_BYTES) {
+        size_t chunk = (RGB_OUTPUT_BYTES - offset > BT_CHUNK_SIZE)
+                           ? BT_CHUNK_SIZE
+                           : (RGB_OUTPUT_BYTES - offset);
+        memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
+        bt_send_blocking(chunk_buffer, chunk + 1);
+        offset += chunk;
+        nrfx_systick_delay_ms(20);
+        reload_watchdog(NULL, NULL);
+    }
+
+    nrfx_systick_delay_ms(100);
+    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+    bt_send_blocking(end_marker, 5);
+
+    free(chunk_buffer);
+    return 0;
+}
+
+/*-----------------------------------------------*/
+/* Acquire one RGB frame                         */
+/*-----------------------------------------------*/
+
+/* Capture one frame from the camera (or use DEV_KIT test data), decode it
+ * to RGB and upscale into the static s_rgb_buffer.
+ *
+ * Memory pattern: only the JPEG buffer touches the heap (transient).
+ * temp + rgb are static (BSS) so no fragmentation, no peak heap pressure
+ * beyond MAX_JPEG_SIZE.
+ *
+ * Returns 0 on success, -1 on error (luaL_error already raised).
+ * Result is in s_rgb_buffer (no caller-owned pointer).
+ * skip_camera_setup=true is the "fast" path.
+ */
+static int acquire_rgb_frame(lua_State *L, bool skip_camera_setup)
+{
+    uint16_t actual_width, actual_height;
+    int result;
+
+#ifdef DEV_KIT_BUILD
+    (void)skip_camera_setup;
+    LOG("DEV_KIT hand: Using hardcoded test JPEG data (%d bytes)", (int)test_jpeg_size);
+
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_rgb_scaled(test_jpeg_data, test_jpeg_size,
+                                    s_temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                    &actual_width, &actual_height,
+                                    3, false);
+    if (result != 0) {
+        luaL_error(L, "RGB decode failed: %d", result);
+        return -1;
+    }
+    LOG("DEV_KIT hand: decoded %dx%d", actual_width, actual_height);
+
+    reload_watchdog(NULL, NULL);
+    upscale_90_to_96_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
+    return 0;
+
+#else
+    /* Camera path */
+    if (!skip_camera_setup) {
+        wake_camera(L);
+        nrfx_systick_delay_ms(100);
+        if (autoexpose(L, 5) != 0) {
+            luaL_error(L, "camera.auto failed");
+            return -1;
+        }
+    }
+
+    if (trigger_capture(L) != 0) {
+        luaL_error(L, "camera.capture failed");
+        return -1;
+    }
+
+    if (!wait_image_ready(L)) {
+        luaL_error(L, "capture timeout");
+        return -1;
+    }
+
+    /* Read JPEG straight into s_rgb_buffer (scratch reuse - it will be
+     * overwritten by the upscale step below). No heap allocation. */
+    size_t jpeg_size = read_jpeg_into(L, s_rgb_buffer);
+    if (jpeg_size == 0) {
+        luaL_error(L, "JPEG read failed or empty");
+        return -1;
+    }
+
+    LOG("Hand detect: JPEG size = %d bytes", (int)jpeg_size);
+
+    /* Decode jpeg (in s_rgb_buffer) -> s_temp_buffer */
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_rgb_scaled(s_rgb_buffer, jpeg_size,
+                                    s_temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                    &actual_width, &actual_height,
+                                    3, false);
+    if (result != 0) {
+        luaL_error(L, "RGB decode failed: %d", result);
+        return -1;
+    }
+
+    /* Upscale s_temp_buffer -> s_rgb_buffer (overwrites the consumed JPEG bytes) */
+    reload_watchdog(NULL, NULL);
+    upscale_90_to_96_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
+    return 0;
+#endif
+}
+
+/*-----------------------------------------------*/
 /* Hand Detection Lua Functions                  */
 /*-----------------------------------------------*/
 
+/* Common body for the single-shot and fast-path hand-detection functions. */
+static int run_hand_detection_common(lua_State *L, bool skip_camera_setup)
+{
+    if (!fomo_is_initialized()) {
+        luaL_error(L, "FOMO model not initialized");
+        return 0;
+    }
+
+    /* Result lands in s_rgb_buffer (BSS, no caller ownership). */
+    if (acquire_rgb_frame(L, skip_camera_setup) != 0) {
+        /* luaL_error already raised */
+        return 0;
+    }
+
+    /* Inference (no extra heap; uses the static TFLM tensor arena). */
+    reload_watchdog(NULL, NULL);
+    int8_t output_grid[FOMO_OUTPUT_SIZE];
+    tflm_status_t infer_status = fomo_infer(s_rgb_buffer, output_grid);
+    if (infer_status != TFLM_OK) {
+        luaL_error(L, "FOMO hand inference failed");
+        return 0;
+    }
+
+    LOG("Hand detect inference complete");
+
+    draw_hand_detection_overlay(output_grid);
+    reload_watchdog(NULL, NULL);
+
+    if (send_image_and_predictions(s_rgb_buffer, output_grid) != 0) {
+        int free_b, frags;
+        heap_stats(&free_b, &frags);
+        luaL_error(L, "BT chunk allocation failed (heap free=%d, frags=%d)",
+                   free_b, frags);
+        return 0;
+    }
+
+    lua_pushinteger(L, RGB_OUTPUT_BYTES + FOMO_OUTPUT_SIZE);
+    return 1;
+}
+
 /**
- * Run FOMO hand detection on camera image.
- *
- * Image pipeline: 720x720 JPEG -> scale=3 (90x90 RGB) -> upscale to 96x96 RGB
- * Inference: fomo_infer(rgb, 8x8x2 grid)
- * Display: green dots for detected hand cells (with edge indicators)
+ * Run FOMO hand detection on camera image (full pipeline including camera
+ * wake + auto-exposure each call).
  *
  * Bluetooth protocol (matches FOMO_BEER_CAN format):
  *   [IMAGE DATA]   27648 bytes (96x96x3 RGB), 200-byte chunks each prefixed 0x01
@@ -240,490 +630,60 @@ static void draw_hand_detection_overlay(const int8_t *output_grid)
  */
 static int lua_experiment_run_hand_detection(lua_State *L)
 {
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
-    const size_t CHUNK_SIZE = 200;
-    const size_t READ_CHUNK_SIZE = 512;
-
-    size_t jpeg_size = 0;
-    uint16_t actual_width, actual_height;
-    int result;
-
-    if (!fomo_is_initialized()) {
-        luaL_error(L, "FOMO model not initialized");
-        return 0;
-    }
-
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    uint8_t *temp_buffer = malloc(RGB_CAPTURE_BYTES);
-    uint8_t *rgb_buffer = malloc(RGB_OUTPUT_BYTES);
-    if (!jpeg_buffer || !temp_buffer || !rgb_buffer) {
-        if (jpeg_buffer) free(jpeg_buffer);
-        if (temp_buffer) free(temp_buffer);
-        if (rgb_buffer) free(rgb_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
-
-    memset(temp_buffer, 0, RGB_CAPTURE_BYTES);
-    memset(rgb_buffer, 0, RGB_OUTPUT_BYTES);
-
-#ifdef DEV_KIT_BUILD
-    free(jpeg_buffer);
-    LOG("DEV_KIT hand: Using hardcoded test JPEG data (%u bytes)", test_jpeg_size);
-
-    reload_watchdog(NULL, NULL);
-    result = jpeg_decode_rgb_scaled(test_jpeg_data, test_jpeg_size,
-                                    temp_buffer, SCALED_SIZE, SCALED_SIZE,
-                                    &actual_width, &actual_height,
-                                    3, false);
-    if (result != 0) {
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "RGB decode failed: %d", result);
-        return 0;
-    }
-    LOG("DEV_KIT hand: decoded %dx%d", actual_width, actual_height);
-#else
-    memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
-
-    /* Wake up camera */
-    lua_getglobal(L, "frame");
-    lua_getfield(L, -1, "camera");
-    lua_getfield(L, -1, "power_save");
-    if (lua_isfunction(L, -1)) {
-        lua_pushboolean(L, 0);
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            lua_pop(L, 3);
-        }
-    } else {
-        lua_pop(L, 1);
-    }
-    lua_pop(L, 2);
-    nrfx_systick_delay_ms(100);
-
-    /* Auto-adjust */
-    for (int i = 0; i < 5; i++) {
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "auto");
-        if (!lua_isfunction(L, -1)) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "camera.auto not found");
-            return 0;
-        }
-        lua_newtable(L);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "camera.auto failed");
-            return 0;
-        }
-        lua_pop(L, 3);
-        nrfx_systick_delay_ms(100);
-        reload_watchdog(NULL, NULL);
-    }
-
-    /* Capture */
-    lua_getglobal(L, "frame");
-    lua_getfield(L, -1, "camera");
-    lua_getfield(L, -1, "capture");
-    if (!lua_isfunction(L, -1)) {
-        lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "camera.capture not found");
-        return 0;
-    }
-    lua_newtable(L);
-    lua_pushinteger(L, CAPTURE_SIZE);
-    lua_setfield(L, -2, "resolution");
-    lua_pushstring(L, "MEDIUM");
-    lua_setfield(L, -2, "quality");
-    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-        lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "capture failed");
-        return 0;
-    }
-    lua_pop(L, 2);
-
-    /* Wait for image ready */
-    uint32_t timeout = 1000000;
-    bool ready = false;
-    while (timeout-- && !ready) {
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "image_ready");
-        if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "image_ready failed");
-            return 0;
-        }
-        ready = lua_toboolean(L, -1);
-        lua_pop(L, 3);
-        if (!ready) {
-            nrfx_systick_delay_us(10);
-        }
-        reload_watchdog(NULL, NULL);
-    }
-
-    if (!ready) {
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "capture timeout");
-        return 0;
-    }
-
-    /* Read JPEG */
-    jpeg_size = 0;
-    while (jpeg_size < MAX_JPEG_SIZE) {
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "read");
-        lua_pushinteger(L, READ_CHUNK_SIZE);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "read failed");
-            return 0;
-        }
-
-        if (lua_isnil(L, -1)) {
-            lua_pop(L, 3);
-            break;
-        }
-
-        size_t chunk_len;
-        const char *chunk = lua_tolstring(L, -1, &chunk_len);
-        memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
-        jpeg_size += chunk_len;
-        lua_pop(L, 3);
-        reload_watchdog(NULL, NULL);
-    }
-
-    LOG("Hand detect: JPEG size = %u bytes", jpeg_size);
-
-    /* Decode JPEG to 90x90 RGB */
-    reload_watchdog(NULL, NULL);
-    result = jpeg_decode_rgb_scaled(jpeg_buffer, jpeg_size,
-                                    temp_buffer, SCALED_SIZE, SCALED_SIZE,
-                                    &actual_width, &actual_height,
-                                    3, false);
-    free(jpeg_buffer);
-
-    if (result != 0) {
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "RGB decode failed: %d", result);
-        return 0;
-    }
-#endif
-
-    /* Upscale 90x90 RGB to 96x96 RGB with 90 CCW rotation */
-    reload_watchdog(NULL, NULL);
-    upscale_90_to_96_rgb_with_rotation(temp_buffer, rgb_buffer);
-    free(temp_buffer);
-
-    /* Run FOMO inference */
-    reload_watchdog(NULL, NULL);
-    int8_t output_grid[FOMO_OUTPUT_SIZE];
-    tflm_status_t infer_status = fomo_infer(rgb_buffer, output_grid);
-    if (infer_status != TFLM_OK) {
-        free(rgb_buffer);
-        luaL_error(L, "FOMO hand inference failed");
-        return 0;
-    }
-
-    LOG("Hand detect inference complete");
-
-    /* Display overlay (green dots for hands) */
-    draw_hand_detection_overlay(output_grid);
-    reload_watchdog(NULL, NULL);
-
-    /* Send RGB image data via Bluetooth */
-    size_t total_bytes = RGB_OUTPUT_BYTES;
-    size_t offset = 0;
-
-    uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
-    if (!chunk_buffer) {
-        free(rgb_buffer);
-        luaL_error(L, "chunk allocation failed");
-        return 0;
-    }
-    chunk_buffer[0] = 0x01;
-
-    while (offset < total_bytes) {
-        size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
-        memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
-        bluetooth_send_data(chunk_buffer, chunk + 1);
-        offset += chunk;
-        nrfx_systick_delay_ms(20);
-        reload_watchdog(NULL, NULL);
-    }
-
-    free(rgb_buffer);
-
-    /* Separator */
-    nrfx_systick_delay_ms(50);
-    uint8_t separator[3] = {0x01, 0xFE, 0xFE};
-    bluetooth_send_data(separator, 3);
-
-    /* Predictions */
-    nrfx_systick_delay_ms(50);
-    offset = 0;
-    while (offset < FOMO_OUTPUT_SIZE) {
-        size_t chunk = (FOMO_OUTPUT_SIZE - offset > CHUNK_SIZE) ? CHUNK_SIZE : (FOMO_OUTPUT_SIZE - offset);
-        chunk_buffer[0] = 0x01;
-        memcpy(chunk_buffer + 1, output_grid + offset, chunk);
-        bluetooth_send_data(chunk_buffer, chunk + 1);
-        offset += chunk;
-        nrfx_systick_delay_ms(20);
-        reload_watchdog(NULL, NULL);
-    }
-
-    /* End marker */
-    nrfx_systick_delay_ms(100);
-    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
-    bluetooth_send_data(end_marker, 5);
-
-    free(chunk_buffer);
-
-    lua_pushinteger(L, total_bytes + FOMO_OUTPUT_SIZE);
-    return 1;
+    return run_hand_detection_common(L, /* skip_camera_setup */ false);
 }
 
 /**
- * Fast hand detection - skips camera wake and autoexposure.
+ * Fast hand detection - skips camera wake and auto-exposure.
  * Caller must ensure camera is awake and auto-adjusted before calling.
- * Used by the streaming test to keep per-frame latency low.
  */
 static int lua_experiment_run_hand_detection_fast(lua_State *L)
 {
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
-    const size_t CHUNK_SIZE = 200;
-    const size_t READ_CHUNK_SIZE = 512;
+    return run_hand_detection_common(L, /* skip_camera_setup */ true);
+}
 
-    size_t jpeg_size = 0;
-    uint16_t actual_width, actual_height;
-    int result;
+/**
+ * Capture-only diagnostic: full camera pipeline (capture + decode + upscale)
+ * but NO inference, NO predictions. Streams just the 96x96 RGB image so
+ * the host can verify capture/decode/upscale are working in isolation.
+ *
+ * Optional bool arg: skip_camera_setup (default false = full pipeline).
+ *
+ * Bluetooth protocol:
+ *   [IMAGE DATA]   27648 bytes (96x96x3 RGB), 200-byte chunks each prefixed 0x01
+ *   [END MARKER]   0x01 0xFF 0xFF 0x00 0x00
+ */
+static int lua_experiment_send_image(lua_State *L)
+{
+    bool skip_camera_setup = false;
+    if (lua_isboolean(L, 1)) {
+        skip_camera_setup = lua_toboolean(L, 1);
+    }
 
-    if (!fomo_is_initialized()) {
-        luaL_error(L, "FOMO model not initialized");
+    if (acquire_rgb_frame(L, skip_camera_setup) != 0) {
+        return 0;  /* luaL_error already raised */
+    }
+
+    if (send_image_only(s_rgb_buffer) != 0) {
+        luaL_error(L, "BT chunk allocation failed");
         return 0;
     }
 
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    uint8_t *temp_buffer = malloc(RGB_CAPTURE_BYTES);
-    uint8_t *rgb_buffer = malloc(RGB_OUTPUT_BYTES);
-    if (!jpeg_buffer || !temp_buffer || !rgb_buffer) {
-        if (jpeg_buffer) free(jpeg_buffer);
-        if (temp_buffer) free(temp_buffer);
-        if (rgb_buffer) free(rgb_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
-
-    memset(temp_buffer, 0, RGB_CAPTURE_BYTES);
-    memset(rgb_buffer, 0, RGB_OUTPUT_BYTES);
-
-#ifdef DEV_KIT_BUILD
-    free(jpeg_buffer);
-    result = jpeg_decode_rgb_scaled(test_jpeg_data, test_jpeg_size,
-                                    temp_buffer, SCALED_SIZE, SCALED_SIZE,
-                                    &actual_width, &actual_height,
-                                    3, false);
-    if (result != 0) {
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "RGB decode failed: %d", result);
-        return 0;
-    }
-#else
-    memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
-
-    /* Capture - assumes camera is already awake */
-    lua_getglobal(L, "frame");
-    lua_getfield(L, -1, "camera");
-    lua_getfield(L, -1, "capture");
-    if (!lua_isfunction(L, -1)) {
-        lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "camera.capture not found");
-        return 0;
-    }
-    lua_newtable(L);
-    lua_pushinteger(L, CAPTURE_SIZE);
-    lua_setfield(L, -2, "resolution");
-    lua_pushstring(L, "MEDIUM");
-    lua_setfield(L, -2, "quality");
-    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-        lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "capture failed");
-        return 0;
-    }
-    lua_pop(L, 2);
-
-    uint32_t timeout = 1000000;
-    bool ready = false;
-    while (timeout-- && !ready) {
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "image_ready");
-        if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "image_ready failed");
-            return 0;
-        }
-        ready = lua_toboolean(L, -1);
-        lua_pop(L, 3);
-        if (!ready) {
-            nrfx_systick_delay_us(10);
-        }
-        reload_watchdog(NULL, NULL);
-    }
-
-    if (!ready) {
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "capture timeout");
-        return 0;
-    }
-
-    jpeg_size = 0;
-    while (jpeg_size < MAX_JPEG_SIZE) {
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "read");
-        lua_pushinteger(L, READ_CHUNK_SIZE);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "read failed");
-            return 0;
-        }
-
-        if (lua_isnil(L, -1)) {
-            lua_pop(L, 3);
-            break;
-        }
-
-        size_t chunk_len;
-        const char *chunk = lua_tolstring(L, -1, &chunk_len);
-        memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
-        jpeg_size += chunk_len;
-        lua_pop(L, 3);
-        reload_watchdog(NULL, NULL);
-    }
-
-    reload_watchdog(NULL, NULL);
-    result = jpeg_decode_rgb_scaled(jpeg_buffer, jpeg_size,
-                                    temp_buffer, SCALED_SIZE, SCALED_SIZE,
-                                    &actual_width, &actual_height,
-                                    3, false);
-    free(jpeg_buffer);
-
-    if (result != 0) {
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "RGB decode failed: %d", result);
-        return 0;
-    }
-#endif
-
-    reload_watchdog(NULL, NULL);
-    upscale_90_to_96_rgb_with_rotation(temp_buffer, rgb_buffer);
-    free(temp_buffer);
-
-    reload_watchdog(NULL, NULL);
-    int8_t output_grid[FOMO_OUTPUT_SIZE];
-    tflm_status_t infer_status = fomo_infer(rgb_buffer, output_grid);
-    if (infer_status != TFLM_OK) {
-        free(rgb_buffer);
-        luaL_error(L, "FOMO hand inference failed");
-        return 0;
-    }
-
-    draw_hand_detection_overlay(output_grid);
-    reload_watchdog(NULL, NULL);
-
-    size_t total_bytes = RGB_OUTPUT_BYTES;
-    size_t offset = 0;
-
-    uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
-    if (!chunk_buffer) {
-        free(rgb_buffer);
-        luaL_error(L, "chunk allocation failed");
-        return 0;
-    }
-    chunk_buffer[0] = 0x01;
-
-    while (offset < total_bytes) {
-        size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
-        memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
-        bluetooth_send_data(chunk_buffer, chunk + 1);
-        offset += chunk;
-        nrfx_systick_delay_ms(20);
-        reload_watchdog(NULL, NULL);
-    }
-
-    free(rgb_buffer);
-
-    nrfx_systick_delay_ms(50);
-    uint8_t separator[3] = {0x01, 0xFE, 0xFE};
-    bluetooth_send_data(separator, 3);
-
-    nrfx_systick_delay_ms(50);
-    offset = 0;
-    while (offset < FOMO_OUTPUT_SIZE) {
-        size_t chunk = (FOMO_OUTPUT_SIZE - offset > CHUNK_SIZE) ? CHUNK_SIZE : (FOMO_OUTPUT_SIZE - offset);
-        chunk_buffer[0] = 0x01;
-        memcpy(chunk_buffer + 1, output_grid + offset, chunk);
-        bluetooth_send_data(chunk_buffer, chunk + 1);
-        offset += chunk;
-        nrfx_systick_delay_ms(20);
-        reload_watchdog(NULL, NULL);
-    }
-
-    nrfx_systick_delay_ms(100);
-    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
-    bluetooth_send_data(end_marker, 5);
-
-    free(chunk_buffer);
-
-    lua_pushinteger(L, total_bytes + FOMO_OUTPUT_SIZE);
+    lua_pushinteger(L, RGB_OUTPUT_BYTES);
     return 1;
 }
 
 /**
  * Run hand detection benchmark - looped local inference, no Bluetooth in loop.
  * Lua: result = frame.experiment.run_hand_detection_benchmark(iterations)
- * Returns table with iterations, total_time_ms, avg_time_ms,
- * and per-stage breakdown (capture/wait/read/decode/upscale/inference/display ms).
+ *
+ * Memory pattern: temp + rgb buffers persist across iterations (51.6 KB
+ * sustained). The small JPEG buffer (8 KB) is allocated/freed inside each
+ * iteration so peak heap is identical to the single-shot path: ~60 KB
+ * during JPEG read, ~52 KB during upscale.
+ *
+ * Returns table with: iterations, hand_detections, total_time_ms,
+ * avg_time_ms, and per-stage breakdown in ms.
  */
 static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
 {
@@ -741,67 +701,17 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
         return 0;
     }
 
-    uint8_t *temp_buffer = malloc(RGB_CAPTURE_BYTES);
-    uint8_t *rgb_buffer = malloc(RGB_OUTPUT_BYTES);
-    if (!temp_buffer || !rgb_buffer) {
-        if (temp_buffer) free(temp_buffer);
-        if (rgb_buffer) free(rgb_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
+    /* temp + rgb live in BSS (s_temp_buffer, s_rgb_buffer) — no heap
+     * allocation needed. Only the per-iteration JPEG buffer touches the
+     * heap. */
 
 #ifndef DEV_KIT_BUILD
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
-    const size_t READ_CHUNK_SIZE = 512;
-    size_t jpeg_size = 0;
-
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    if (!jpeg_buffer) {
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "JPEG allocation failed");
-        return 0;
-    }
-
     /* Initialize camera ONCE before the benchmark loop */
-    lua_getglobal(L, "frame");
-    lua_getfield(L, -1, "camera");
-    lua_getfield(L, -1, "power_save");
-    if (lua_isfunction(L, -1)) {
-        lua_pushboolean(L, 0);
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            lua_pop(L, 3);
-        }
-    } else {
-        lua_pop(L, 1);
-    }
-    lua_pop(L, 2);
+    wake_camera(L);
     nrfx_systick_delay_ms(100);
-
-    for (int i = 0; i < 5; i++) {
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "auto");
-        if (!lua_isfunction(L, -1)) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "camera.auto not found");
-            return 0;
-        }
-        lua_newtable(L);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "camera.auto failed");
-            return 0;
-        }
-        lua_pop(L, 3);
-        nrfx_systick_delay_ms(100);
-        reload_watchdog(NULL, NULL);
+    if (autoexpose(L, 5) != 0) {
+        luaL_error(L, "camera.auto failed");
+        return 0;
     }
     LOG("Hand benchmark: camera initialized");
 #endif
@@ -813,7 +723,6 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    uint32_t time_memset = 0;
     uint32_t time_capture = 0;
     uint32_t time_wait_ready = 0;
     uint32_t time_read_jpeg = 0;
@@ -828,132 +737,52 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
     for (int iter = 0; iter < iterations; iter++) {
         reload_watchdog(NULL, NULL);
 
-        t0 = DWT->CYCCNT;
-        memset(temp_buffer, 0, RGB_CAPTURE_BYTES);
-        memset(rgb_buffer, 0, RGB_OUTPUT_BYTES);
-        t1 = DWT->CYCCNT;
-        time_memset += (t1 - t0);
-
 #ifdef DEV_KIT_BUILD
         t0 = DWT->CYCCNT;
         result = jpeg_decode_rgb_scaled(test_jpeg_data, test_jpeg_size,
-                                        temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                        s_temp_buffer, SCALED_SIZE, SCALED_SIZE,
                                         &actual_width, &actual_height,
                                         3, false);
         if (result != 0) {
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "RGB decode failed: %d", result);
             return 0;
         }
         t1 = DWT->CYCCNT;
         time_decode += (t1 - t0);
 #else
-        memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
-
         t0 = DWT->CYCCNT;
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "capture");
-        if (!lua_isfunction(L, -1)) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "camera.capture not found");
+        if (trigger_capture(L) != 0) {
+            luaL_error(L, "camera.capture failed");
             return 0;
         }
-        lua_newtable(L);
-        lua_pushinteger(L, CAPTURE_SIZE);
-        lua_setfield(L, -2, "resolution");
-        lua_pushstring(L, "MEDIUM");
-        lua_setfield(L, -2, "quality");
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
-            luaL_error(L, "capture failed");
-            return 0;
-        }
-        lua_pop(L, 2);
         t1 = DWT->CYCCNT;
         time_capture += (t1 - t0);
 
         t0 = DWT->CYCCNT;
-        uint32_t timeout = 1000000;
-        bool ready = false;
-        while (timeout-- && !ready) {
-            lua_getglobal(L, "frame");
-            lua_getfield(L, -1, "camera");
-            lua_getfield(L, -1, "image_ready");
-            if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-                lua_pop(L, 3);
-                free(jpeg_buffer);
-                free(temp_buffer);
-                free(rgb_buffer);
-                luaL_error(L, "image_ready failed");
-                return 0;
-            }
-            ready = lua_toboolean(L, -1);
-            lua_pop(L, 3);
-            if (!ready) {
-                nrfx_systick_delay_us(10);
-            }
-            reload_watchdog(NULL, NULL);
-        }
-
-        if (!ready) {
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
+        if (!wait_image_ready(L)) {
             luaL_error(L, "capture timeout");
             return 0;
         }
         t1 = DWT->CYCCNT;
         time_wait_ready += (t1 - t0);
 
+        /* JPEG read into s_rgb_buffer (scratch reuse before upscale) */
         t0 = DWT->CYCCNT;
-        jpeg_size = 0;
-        while (jpeg_size < MAX_JPEG_SIZE) {
-            lua_getglobal(L, "frame");
-            lua_getfield(L, -1, "camera");
-            lua_getfield(L, -1, "read");
-            lua_pushinteger(L, READ_CHUNK_SIZE);
-            if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-                lua_pop(L, 3);
-                free(jpeg_buffer);
-                free(temp_buffer);
-                free(rgb_buffer);
-                luaL_error(L, "read failed");
-                return 0;
-            }
-
-            if (lua_isnil(L, -1)) {
-                lua_pop(L, 3);
-                break;
-            }
-
-            size_t chunk_len;
-            const char *chunk = lua_tolstring(L, -1, &chunk_len);
-            memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
-            jpeg_size += chunk_len;
-            lua_pop(L, 3);
-            reload_watchdog(NULL, NULL);
+        size_t jpeg_size = read_jpeg_into(L, s_rgb_buffer);
+        if (jpeg_size == 0) {
+            luaL_error(L, "JPEG read failed");
+            return 0;
         }
         t1 = DWT->CYCCNT;
         time_read_jpeg += (t1 - t0);
 
         t0 = DWT->CYCCNT;
         reload_watchdog(NULL, NULL);
-        result = jpeg_decode_rgb_scaled(jpeg_buffer, jpeg_size,
-                                        temp_buffer, SCALED_SIZE, SCALED_SIZE,
+        result = jpeg_decode_rgb_scaled(s_rgb_buffer, jpeg_size,
+                                        s_temp_buffer, SCALED_SIZE, SCALED_SIZE,
                                         &actual_width, &actual_height,
                                         3, false);
         if (result != 0) {
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "RGB decode failed: %d", result);
             return 0;
         }
@@ -963,27 +792,21 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
 
         t0 = DWT->CYCCNT;
         reload_watchdog(NULL, NULL);
-        upscale_90_to_96_rgb_with_rotation(temp_buffer, rgb_buffer);
+        upscale_90_to_96_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
         t1 = DWT->CYCCNT;
         time_upscale += (t1 - t0);
 
         t0 = DWT->CYCCNT;
         reload_watchdog(NULL, NULL);
         int8_t output_grid[FOMO_OUTPUT_SIZE];
-        tflm_status_t infer_status = fomo_infer(rgb_buffer, output_grid);
+        tflm_status_t infer_status = fomo_infer(s_rgb_buffer, output_grid);
         if (infer_status != TFLM_OK) {
-            free(temp_buffer);
-            free(rgb_buffer);
-#ifndef DEV_KIT_BUILD
-            free(jpeg_buffer);
-#endif
             luaL_error(L, "FOMO hand inference failed");
             return 0;
         }
         t1 = DWT->CYCCNT;
         time_inference += (t1 - t0);
 
-        /* Count cells with hand detected (class 1 above threshold) */
         bool any_hand = false;
         for (int i = 0; i < FOMO_GRID_SIZE * FOMO_GRID_SIZE; i++) {
             if (output_grid[i * FOMO_NUM_CLASSES + 1] > -50) {
@@ -1011,13 +834,6 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
     uint32_t total_ms = elapsed_cycles / 64000;
     uint32_t avg_ms = total_ms / (uint32_t)iterations;
 
-    free(temp_buffer);
-    free(rgb_buffer);
-#ifndef DEV_KIT_BUILD
-    free(jpeg_buffer);
-#endif
-
-    uint32_t memset_ms = time_memset / 64000;
     uint32_t capture_ms = time_capture / 64000;
     uint32_t wait_ready_ms = time_wait_ready / 64000;
     uint32_t read_jpeg_ms = time_read_jpeg / 64000;
@@ -1028,8 +844,8 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
 
     LOG("Hand benchmark complete: %d iterations, %d frames with hand, %lu ms total, %lu ms avg",
         (int)iterations, hand_count, total_ms, avg_ms);
-    LOG("Timing breakdown (ms): memset=%lu capture=%lu wait=%lu read=%lu decode=%lu upscale=%lu infer=%lu display=%lu",
-        memset_ms, capture_ms, wait_ready_ms, read_jpeg_ms, decode_ms, upscale_ms, inference_ms, display_ms);
+    LOG("Timing breakdown (ms): capture=%lu wait=%lu read=%lu decode=%lu upscale=%lu infer=%lu display=%lu",
+        capture_ms, wait_ready_ms, read_jpeg_ms, decode_ms, upscale_ms, inference_ms, display_ms);
 
     lua_newtable(L);
     lua_pushinteger(L, iterations);
@@ -1041,8 +857,6 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
     lua_pushinteger(L, avg_ms);
     lua_setfield(L, -2, "avg_time_ms");
 
-    lua_pushinteger(L, memset_ms);
-    lua_setfield(L, -2, "memset_ms");
     lua_pushinteger(L, capture_ms);
     lua_setfield(L, -2, "capture_ms");
     lua_pushinteger(L, wait_ready_ms);
@@ -1082,4 +896,7 @@ void experiment_register_lua_functions(lua_State *L, int experiment_table)
 
     lua_pushcfunction(L, lua_experiment_run_hand_detection_benchmark);
     lua_setfield(L, -2, "run_hand_detection_benchmark");
+
+    lua_pushcfunction(L, lua_experiment_send_image);
+    lua_setfield(L, -2, "send_image");
 }

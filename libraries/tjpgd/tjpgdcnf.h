@@ -5,7 +5,7 @@
 #define	JD_SZBUF		512
 /* Specifies size of stream input buffer */
 
-#if defined(ML_EXPERIMENT_VWW_RGB)
+#if defined(ML_EXPERIMENT_VWW_RGB) || defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
 #define JD_FORMAT       0   /* RGB888 (24-bit/pix) */
 #else
 #define JD_FORMAT       2   /* Grayscale (8-bit/pix) */

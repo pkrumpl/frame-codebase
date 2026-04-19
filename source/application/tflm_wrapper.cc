@@ -83,7 +83,7 @@ static TfLiteStatus RegisterFomoOps(FomoOpResolver& op_resolver) {
 // FOMO tensor arena
 // TODO: check for upper limit when removing hardcoded jpg data from experiment.c
 #if defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
-constexpr int kFomoTensorArenaSize = 140 * 1024;
+constexpr int kFomoTensorArenaSize = 115000;
 #else
 constexpr int kFomoTensorArenaSize = 135 * 1024;
 #endif

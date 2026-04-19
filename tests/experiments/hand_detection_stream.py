@@ -96,11 +96,13 @@ def update_plot(axes, image, detections, frame_count):
     axes[0].clear()
     axes[1].clear()
 
-    axes[0].imshow(image)
+    # interpolation='nearest' avoids matplotlib's antialiased upsampling,
+    # which produces moire/banding artifacts on small images.
+    axes[0].imshow(image, interpolation='nearest')
     axes[0].set_title(f'Frame {frame_count} ({IMAGE_WIDTH}x{IMAGE_HEIGHT} RGB)')
     axes[0].axis('off')
 
-    axes[1].imshow(image)
+    axes[1].imshow(image, interpolation='nearest')
     axes[1].set_title(f'Hand detections: {len(detections)}')
 
     cell_width = IMAGE_WIDTH / GRID_SIZE
@@ -160,13 +162,18 @@ async def main():
     while running:
         reset_buffers()
 
-        await b.send_lua("frame.experiment.run_hand_detection_fast()")
+        # Full pipeline (with per-frame power_save+autoexpose). The fast
+        # variant skips that and fires a new 27 KB image transmission
+        # immediately after the previous one - the BLE TX queue never
+        # drains between frames and packets get dropped at the link
+        # layer. VWW_RGB stream uses the same full-pipeline pattern.
+        await b.send_lua("frame.experiment.run_hand_detection()")
 
-        timeout = 30
+        timeout = 45
         elapsed = 0
         while not transfer_complete and elapsed < timeout and running:
-            await asyncio.sleep(0.1)
-            elapsed += 0.1
+            await asyncio.sleep(0.05)
+            elapsed += 0.05
 
         if not running:
             break
@@ -178,6 +185,15 @@ async def main():
         if (len(received_image) >= EXPECTED_IMAGE_BYTES
                 and len(received_predictions) >= EXPECTED_PRED_BYTES):
             frame_count += 1
+
+            # Diagnostic: byte counts. If image > 27648 we lost the separator
+            # mid-stream (image bytes got mis-classified). If image == 27648
+            # exactly, framing was clean.
+            img_extra = len(received_image) - EXPECTED_IMAGE_BYTES
+            pred_extra = len(received_predictions) - EXPECTED_PRED_BYTES
+            if img_extra != 0 or pred_extra != 0:
+                print(f"  [warn] byte drift: image={len(received_image)} (+{img_extra}), "
+                      f"pred={len(received_predictions)} (+{pred_extra})")
 
             img_data = np.frombuffer(bytes(received_image[:EXPECTED_IMAGE_BYTES]), dtype=np.uint8)
             img = img_data.reshape((IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS))
