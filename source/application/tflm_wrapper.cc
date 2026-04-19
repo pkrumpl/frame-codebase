@@ -32,6 +32,8 @@ void* calloc(size_t, size_t);
 // Include model data based on selected experiment
 #if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
 #include "models/fomo_beer_can.h"
+#elif defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
+#include "models/fomo_hand_detection.h"
 #elif defined(ML_EXPERIMENT_VWW)
 #include "models/person_detect.h"
 #elif defined(ML_EXPERIMENT_VWW_RGB)
@@ -60,7 +62,7 @@ extern "C" {
  * FOMO Object Detection Model Implementation
  *============================================================================*/
 
-#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN) || defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
 
 // FOMO model requires these ops
 using FomoOpResolver = tflite::MicroMutableOpResolver<9>;
@@ -80,7 +82,11 @@ static TfLiteStatus RegisterFomoOps(FomoOpResolver& op_resolver) {
 
 // FOMO tensor arena
 // TODO: check for upper limit when removing hardcoded jpg data from experiment.c
+#if defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
+constexpr int kFomoTensorArenaSize = 140 * 1024;
+#else
 constexpr int kFomoTensorArenaSize = 135 * 1024;
+#endif
 static uint8_t fomo_tensor_arena[kFomoTensorArenaSize] __attribute__((aligned(16)));
 static tflite::MicroInterpreter* fomo_interpreter = nullptr;
 static FomoOpResolver* fomo_op_resolver = nullptr;
@@ -99,7 +105,11 @@ tflm_status_t fomo_initialize(void) {
 
   tflite::InitializeTarget();
 
+#if defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
+  const tflite::Model* model = ::tflite::GetModel(fomo_hand_detection_model);
+#else
   const tflite::Model* model = ::tflite::GetModel(fomo_beer_can_model);
+#endif
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     MicroPrintf("FOMO model schema version mismatch! Expected %d, got %d",
                 TFLITE_SCHEMA_VERSION, model->version());
@@ -144,14 +154,20 @@ tflm_status_t fomo_initialize(void) {
               output->type);
 
   // Verify expected dimensions
-  if (input->dims->data[1] != 64 || input->dims->data[2] != 64) {
-    MicroPrintf("WARNING: Expected 64x64 input, got %dx%d",
-                input->dims->data[1], input->dims->data[2]);
+  if (input->dims->data[1] != FOMO_INPUT_HEIGHT ||
+      input->dims->data[2] != FOMO_INPUT_WIDTH ||
+      input->dims->data[3] != FOMO_INPUT_CHANNELS) {
+    MicroPrintf("WARNING: Expected %dx%dx%d input, got %dx%dx%d",
+                FOMO_INPUT_HEIGHT, FOMO_INPUT_WIDTH, FOMO_INPUT_CHANNELS,
+                input->dims->data[1], input->dims->data[2],
+                input->dims->data[3]);
   }
 
-  if (output->dims->data[1] != 8 || output->dims->data[2] != 8 ||
-      output->dims->data[3] != 3) {
-    MicroPrintf("WARNING: Expected 8x8x3 output, got %dx%dx%d",
+  if (output->dims->data[1] != FOMO_GRID_SIZE ||
+      output->dims->data[2] != FOMO_GRID_SIZE ||
+      output->dims->data[3] != FOMO_NUM_CLASSES) {
+    MicroPrintf("WARNING: Expected %dx%dx%d output, got %dx%dx%d",
+                FOMO_GRID_SIZE, FOMO_GRID_SIZE, FOMO_NUM_CLASSES,
                 output->dims->data[1], output->dims->data[2],
                 output->dims->data[3]);
   }
@@ -166,20 +182,21 @@ tflm_status_t fomo_initialize(void) {
 }
 
 /**
- * Run FOMO inference on a 64x64 grayscale image
- * Input: uint8 grayscale [0-255]
- * Output: int8 grid [1, 8, 8, 3]
+ * Run FOMO inference on an FOMO_INPUT_WIDTH x FOMO_INPUT_HEIGHT image
+ * (grayscale or RGB depending on the active experiment).
+ * Input: uint8 image data [0-255]
+ * Output: int8 grid [1, FOMO_GRID_SIZE, FOMO_GRID_SIZE, FOMO_NUM_CLASSES]
  *
  * Quantization: input scale ~ 1/255, zero_point = -128
- * So uint8_grayscale -> int8_input = grayscale - 128
+ * So uint8 -> int8 = byte - 128 (per channel/byte)
  */
-tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid) {
+tflm_status_t fomo_infer(const uint8_t* input_data_u8, int8_t* output_grid) {
   if (!fomo_initialized || fomo_interpreter == nullptr) {
     MicroPrintf("ERROR: FOMO model not initialized. Call fomo_initialize() first!");
     return TFLM_ERROR;
   }
 
-  if (input_grayscale == nullptr || output_grid == nullptr) {
+  if (input_data_u8 == nullptr || output_grid == nullptr) {
     MicroPrintf("ERROR: Invalid input/output pointers");
     return TFLM_ERROR;
   }
@@ -187,10 +204,10 @@ tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid) {
   // Get input tensor
   TfLiteTensor* input = fomo_interpreter->input(0);
 
-  // Convert uint8 grayscale [0-255] to int8 [-128, 127]
+  // Convert uint8 [0-255] to int8 [-128, 127] (per byte; works for grayscale or RGB)
   int8_t* input_data = input->data.int8;
   for (int i = 0; i < FOMO_INPUT_SIZE; i++) {
-    input_data[i] = static_cast<int8_t>(static_cast<int16_t>(input_grayscale[i]) - 128);
+    input_data[i] = static_cast<int8_t>(static_cast<int16_t>(input_data_u8[i]) - 128);
   }
 
   // Run inference
@@ -214,7 +231,7 @@ bool fomo_is_initialized(void) {
   return fomo_initialized;
 }
 
-#endif  // ML_EXPERIMENT_FOMO_BEER_CAN
+#endif  // ML_EXPERIMENT_FOMO_BEER_CAN || ML_EXPERIMENT_FOMO_HAND_DETECTION
 
 /*=============================================================================
  * Person Detection Model Implementation

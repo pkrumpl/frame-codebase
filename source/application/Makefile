@@ -36,8 +36,8 @@ ML_EXPERIMENT ?= VWW
 $(info ML_EXPERIMENT is $(ML_EXPERIMENT))
 
 # Validate ML_EXPERIMENT value
-ifeq ($(filter $(ML_EXPERIMENT),VWW VWW_RGB FOMO_BEER_CAN HELLO_WORLD),)
-$(error Invalid ML_EXPERIMENT value '$(ML_EXPERIMENT)'. Valid values: VWW, VWW_RGB, FOMO_BEER_CAN, HELLO_WORLD)
+ifeq ($(filter $(ML_EXPERIMENT),VWW VWW_RGB FOMO_BEER_CAN FOMO_HAND_DETECTION HELLO_WORLD),)
+$(error Invalid ML_EXPERIMENT value '$(ML_EXPERIMENT)'. Valid values: VWW, VWW_RGB, FOMO_BEER_CAN, FOMO_HAND_DETECTION, HELLO_WORLD)
 endif
 
 LIBRARIES := ../../libraries
@@ -204,6 +204,9 @@ C_FILES += lua_libraries/experiment_vww_rgb.c
 endif
 ifeq ($(ML_EXPERIMENT),FOMO_BEER_CAN)
 C_FILES += lua_libraries/experiment_fomo.c
+endif
+ifeq ($(ML_EXPERIMENT),FOMO_HAND_DETECTION)
+C_FILES += lua_libraries/experiment_fomo_hand.c
 endif
 ifeq ($(ML_EXPERIMENT),HELLO_WORLD)
 C_FILES += lua_libraries/experiment_hello_world.c

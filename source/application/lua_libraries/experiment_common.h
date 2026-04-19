@@ -62,7 +62,7 @@ int jpeg_decode_grayscale(const uint8_t *jpeg_data, size_t jpeg_size,
  */
 void upscale_90_to_96_with_rotation(const uint8_t *src, uint8_t *dst);
 
-#if defined(ML_EXPERIMENT_VWW_RGB)
+#if defined(ML_EXPERIMENT_VWW_RGB) || defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
 /*-----------------------------------------------*/
 /* RGB Image Processing Functions                */
 /*-----------------------------------------------*/
@@ -90,7 +90,7 @@ int jpeg_decode_rgb_scaled(const uint8_t *jpeg_data, size_t jpeg_size,
  */
 void upscale_90_to_96_rgb_with_rotation(const uint8_t *src, uint8_t *dst);
 
-#endif /* ML_EXPERIMENT_VWW_RGB */
+#endif /* ML_EXPERIMENT_VWW_RGB || ML_EXPERIMENT_FOMO_HAND_DETECTION */
 
 /*-----------------------------------------------*/
 /* Experiment Interface                          */

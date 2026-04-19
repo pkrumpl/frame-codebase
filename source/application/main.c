@@ -519,7 +519,7 @@ int main(void)
     #endif
 
     // Initialize ML model based on selected experiment
-#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN) || defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
     LOG("Initializing FOMO object detection model...");
     tflm_status_t ml_result = fomo_initialize();
     if (ml_result != TFLM_OK) {

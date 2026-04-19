@@ -24,16 +24,28 @@ typedef enum {
 } tflm_status_t;
 
 /*=============================================================================
- * FOMO Object Detection Model API (only when ML_EXPERIMENT_FOMO_BEER_CAN)
+ * FOMO Object Detection Model API
+ * (active when ML_EXPERIMENT_FOMO_BEER_CAN or ML_EXPERIMENT_FOMO_HAND_DETECTION)
  *============================================================================*/
 
-#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN) || defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
 
-// FOMO model constants
-#define FOMO_INPUT_SIZE   4096   // 64x64 grayscale
-#define FOMO_OUTPUT_SIZE  192    // 8x8x3 grid (8*8*3 classes)
-#define FOMO_GRID_SIZE    8      // Output grid dimension
-#define FOMO_NUM_CLASSES  3      // Background, Beer, Can
+#if defined(ML_EXPERIMENT_FOMO_BEER_CAN)
+#define FOMO_INPUT_WIDTH    64
+#define FOMO_INPUT_HEIGHT   64
+#define FOMO_INPUT_CHANNELS 1
+#define FOMO_GRID_SIZE      8       // Output grid dimension
+#define FOMO_NUM_CLASSES    3       // Background, Beer, Can
+#elif defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
+#define FOMO_INPUT_WIDTH    96
+#define FOMO_INPUT_HEIGHT   96
+#define FOMO_INPUT_CHANNELS 3
+#define FOMO_GRID_SIZE      8       // Output grid dimension
+#define FOMO_NUM_CLASSES    2       // Background, Hand
+#endif
+
+#define FOMO_INPUT_SIZE  (FOMO_INPUT_WIDTH * FOMO_INPUT_HEIGHT * FOMO_INPUT_CHANNELS)
+#define FOMO_OUTPUT_SIZE (FOMO_GRID_SIZE * FOMO_GRID_SIZE * FOMO_NUM_CLASSES)
 
 /**
  * Initialize the FOMO object detection model (must be called once before inference)
@@ -42,12 +54,13 @@ typedef enum {
 tflm_status_t fomo_initialize(void);
 
 /**
- * Run FOMO inference on a 64x64 grayscale image
- * @param input_grayscale Pointer to 4096 bytes of uint8 grayscale image data
- * @param output_grid Pointer to 192 bytes buffer for int8 output grid (8x8x3)
+ * Run FOMO inference on an FOMO_INPUT_WIDTH x FOMO_INPUT_HEIGHT image
+ * (grayscale or RGB depending on the active experiment).
+ * @param input_data Pointer to FOMO_INPUT_SIZE bytes of uint8 image data
+ * @param output_grid Pointer to FOMO_OUTPUT_SIZE bytes buffer for int8 output grid
  * @return TFLM_OK on success, TFLM_ERROR on failure
  */
-tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid);
+tflm_status_t fomo_infer(const uint8_t* input_data, int8_t* output_grid);
 
 /**
  * Check if FOMO model is initialized
@@ -55,7 +68,7 @@ tflm_status_t fomo_infer(const uint8_t* input_grayscale, int8_t* output_grid);
  */
 bool fomo_is_initialized(void);
 
-#endif /* ML_EXPERIMENT_FOMO_BEER_CAN */
+#endif /* ML_EXPERIMENT_FOMO_BEER_CAN || ML_EXPERIMENT_FOMO_HAND_DETECTION */
 
 /*=============================================================================
  * Person Detection Model API (only when ML_EXPERIMENT_VWW or ML_EXPERIMENT_VWW_RGB)
