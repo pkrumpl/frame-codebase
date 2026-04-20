@@ -37,8 +37,8 @@ typedef enum {
 #define FOMO_GRID_SIZE      8       // Output grid dimension
 #define FOMO_NUM_CLASSES    3       // Background, Beer, Can
 #elif defined(ML_EXPERIMENT_FOMO_HAND_DETECTION)
-#define FOMO_INPUT_WIDTH    96
-#define FOMO_INPUT_HEIGHT   96
+#define FOMO_INPUT_WIDTH    64
+#define FOMO_INPUT_HEIGHT   64
 #define FOMO_INPUT_CHANNELS 3
 #define FOMO_GRID_SIZE      8       // Output grid dimension
 #define FOMO_NUM_CLASSES    2       // Background, Hand
@@ -67,6 +67,14 @@ tflm_status_t fomo_infer(const uint8_t* input_data, int8_t* output_grid);
  * @return true if initialized, false otherwise
  */
 bool fomo_is_initialized(void);
+
+/**
+ * Get the input/output quantization parameters cached at init time.
+ * Required for correct dequantization of model output (float = (int8 - zp) * scale)
+ * and to verify the input fast path is valid for this model.
+ */
+void fomo_get_quant_params(float *in_scale, int32_t *in_zero_point,
+                           float *out_scale, int32_t *out_zero_point);
 
 #endif /* ML_EXPERIMENT_FOMO_BEER_CAN || ML_EXPERIMENT_FOMO_HAND_DETECTION */
 

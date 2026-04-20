@@ -2,12 +2,12 @@
  * FOMO Hand Detection Experiment Implementation
  *
  * Object detection experiment using a FOMO model trained for hand detection.
- * Input: 96x96 RGB. Output: 8x8x2 (background, hand).
+ * Input: 64x64 RGB. Output: 8x8x2 (background, hand).
  * Compiled when ML_EXPERIMENT=FOMO_HAND_DETECTION is set.
  *
- * Memory pattern: buffers are allocated and freed sequentially based on
- * lifetime so peak heap use stays below the sum of all working buffers.
- * Peak during the upscale step is ~52 KB (temp 24 KB + rgb 27.6 KB).
+ * Memory pattern: temp + rgb buffers live in BSS (~48 KB total). Heap is
+ * untouched on the hot path; the only per-call allocations are the small
+ * BT chunk buffer and SPI sprite payloads.
  */
 
 #include <string.h>
@@ -35,32 +35,27 @@ extern const size_t test_jpeg_size;
 /* Image dimensions */
 #define CAPTURE_SIZE      720
 #define SCALED_SIZE       90    /* After TJpgDec scale=3 (720/8=90) */
-#define OUT_DIM           96    /* ML input dimension (96x96) */
+#define OUT_DIM           64    /* ML input dimension (64x64) */
 #define NUM_CHANNELS      3     /* RGB */
 
 #define RGB_CAPTURE_BYTES (SCALED_SIZE * SCALED_SIZE * NUM_CHANNELS)  /* 24,300 */
-#define RGB_OUTPUT_BYTES  (OUT_DIM * OUT_DIM * NUM_CHANNELS)          /* 27,648 */
+#define RGB_OUTPUT_BYTES  (OUT_DIM * OUT_DIM * NUM_CHANNELS)          /* 12,288 */
 
-/* JPEG cap == RGB_OUTPUT_BYTES because the JPEG is read into s_rgb_buffer
- * (which is unused until upscale). 27,648 bytes is comfortably above the
- * typical 720x720 MEDIUM JPEG size. */
-#define MAX_JPEG_SIZE     RGB_OUTPUT_BYTES
+/* The 64x64 RGB output is smaller than a typical JPEG, so s_rgb_buffer is
+ * sized to hold the JPEG (the larger of the two uses) and only the first
+ * RGB_OUTPUT_BYTES are valid after downscale. */
+#define MAX_JPEG_SIZE     (24 * 1024)
 #define BT_CHUNK_SIZE     200
 #define READ_CHUNK_SIZE   512
 
-/* The two large working buffers live in BSS rather than on the heap.
- *   - They're needed on every inference call (streaming use case).
- *   - Per-call malloc/free of buffers this large fragments the heap fast,
- *     and Lua's own allocator activity already eats most of the heap.
- *   - s_rgb_buffer is double-purposed: it holds the raw JPEG during
- *     read+decode, then the final 96x96 RGB image after upscale. The
- *     JPEG bytes are consumed by the decoder before upscale overwrites
- *     them, so the reuse is safe.
- * Static placement is contiguous at link time -> no allocator, no
- * fragmentation, and no heap allocation in the hot path at all. */
+/* Working buffers in BSS to eliminate heap fragmentation across streaming
+ * calls. s_rgb_buffer is double-purposed: it holds the raw JPEG during
+ * read+decode, then the final 64x64 RGB image after downscale. The JPEG
+ * bytes are consumed by the decoder before downscale overwrites them. */
 static uint8_t s_temp_buffer[RGB_CAPTURE_BYTES];  /* 24,300 B (decode dst) */
-static uint8_t s_rgb_buffer[RGB_OUTPUT_BYTES];    /* 27,648 B (jpeg src,
-                                                              then RGB) */
+static uint8_t s_rgb_buffer[MAX_JPEG_SIZE];       /* 24,576 B (jpeg src,
+                                                              then 12,288 B
+                                                              RGB output) */
 
 /* Format current heap stats into buf. Suitable for inclusion in error
  * messages so the failure mode is visible over Bluetooth. */
@@ -72,18 +67,120 @@ static void heap_stats(int *out_free, int *out_frags)
 }
 
 /*-----------------------------------------------*/
+/* FOMO post-processing                          */
+/*-----------------------------------------------*/
+
+/* Detection threshold in float (post-softmax probability) space.
+ * Edge Impulse default is 0.5; tinyML deployments often need 0.05-0.3
+ * for usable recall. Settable from Lua via set_threshold(). */
+static float s_threshold = 0.5f;
+
+/* "Cube" = a connected component of above-threshold cells of the same
+ * class on the FOMO heatmap. FOMO does NOT use IoU-style NMS; instead
+ * adjacent positive cells are merged into one detection (Edge Impulse's
+ * `ei_handle_cube` algorithm). */
+typedef struct {
+    int8_t x, y;          /* grid coords of top-left corner */
+    int8_t width, height; /* in grid cells */
+    float score;          /* max score across cells in this cube */
+} cube_t;
+
+/* Up to 16 simultaneous detections per frame is more than enough for an
+ * 8x8 grid (64 cells max). */
+#define MAX_CUBES 16
+static cube_t s_cubes[MAX_CUBES];
+static int s_cube_count = 0;
+
+/* Returns true if (x, y) is within or directly adjacent to cube `c`. */
+static bool cube_overlaps(const cube_t *c, int x, int y)
+{
+    int x0 = c->x - 1, x1 = c->x + c->width;       /* +/-1 cell margin */
+    int y0 = c->y - 1, y1 = c->y + c->height;
+    return (x >= x0 && x <= x1 && y >= y0 && y <= y1);
+}
+
+static void cube_expand(cube_t *c, int x, int y, float score)
+{
+    int x0 = c->x < x ? c->x : x;
+    int y0 = c->y < y ? c->y : y;
+    int x1 = (c->x + c->width  - 1) > x ? (c->x + c->width  - 1) : x;
+    int y1 = (c->y + c->height - 1) > y ? (c->y + c->height - 1) : y;
+    c->x = (int8_t)x0;
+    c->y = (int8_t)y0;
+    c->width  = (int8_t)(x1 - x0 + 1);
+    c->height = (int8_t)(y1 - y0 + 1);
+    if (score > c->score) c->score = score;
+}
+
+/* Build the cube list from the dequantized heatmap.  Caller can then
+ * iterate s_cubes[0..s_cube_count) and emit one detection per cube. */
+static void build_cubes(const int8_t *output_grid)
+{
+    s_cube_count = 0;
+
+    float out_scale; int32_t out_zp;
+    fomo_get_quant_params(NULL, NULL, &out_scale, &out_zp);
+
+    /* Diagnostic: track max score across the whole grid so the user can
+     * tell whether the model is producing high confidences (and
+     * threshold is wrong) vs. uniformly low scores (model is the issue). */
+    float max_score = 0.0f;
+    int max_x = -1, max_y = -1;
+
+    for (int gy = 0; gy < FOMO_GRID_SIZE; gy++) {
+        for (int gx = 0; gx < FOMO_GRID_SIZE; gx++) {
+            int idx = (gy * FOMO_GRID_SIZE + gx) * FOMO_NUM_CLASSES;
+            /* Skip class 0 (background); iterate non-bg classes. For our
+             * model FOMO_NUM_CLASSES = 2, so only class 1 (hand). */
+            for (int c = 1; c < FOMO_NUM_CLASSES; c++) {
+                int8_t q = output_grid[idx + c];
+                float prob = (float)((int32_t)q - out_zp) * out_scale;
+
+                if (prob > max_score) {
+                    max_score = prob;
+                    max_x = gx; max_y = gy;
+                }
+
+                if (prob < s_threshold) continue;
+
+                /* Try to merge into an existing cube */
+                bool merged = false;
+                for (int i = 0; i < s_cube_count; i++) {
+                    if (cube_overlaps(&s_cubes[i], gx, gy)) {
+                        cube_expand(&s_cubes[i], gx, gy, prob);
+                        merged = true;
+                        break;
+                    }
+                }
+                if (!merged && s_cube_count < MAX_CUBES) {
+                    s_cubes[s_cube_count].x = (int8_t)gx;
+                    s_cubes[s_cube_count].y = (int8_t)gy;
+                    s_cubes[s_cube_count].width = 1;
+                    s_cubes[s_cube_count].height = 1;
+                    s_cubes[s_cube_count].score = prob;
+                    s_cube_count++;
+                }
+            }
+        }
+    }
+
+    LOG("FOMO heatmap: max=%.3f at (%d,%d), thr=%.3f, cubes=%d",
+        (double)max_score, max_x, max_y, (double)s_threshold, s_cube_count);
+}
+
+/*-----------------------------------------------*/
 /* Hand Detection Overlay                        */
 /*-----------------------------------------------*/
 
 /**
  * Draw detection overlay on Frame display after FOMO inference.
- * Single class: hand (drawn as a green dot per detected grid cell).
- * Edge indicators (left/right vertical bars) for detections outside the
- * display FOV.
+ * Receives the already-built cube list (one dot per cube, not per cell).
+ * Edge indicators (left/right vertical bars) for cubes whose centroid
+ * falls outside the display FOV.
  */
 static void draw_hand_detection_overlay(const int8_t *output_grid)
 {
-    const int8_t DETECTION_THRESHOLD = -50;
+    (void)output_grid;  /* unused - cubes already built by build_cubes() */
 
     const uint16_t DISPLAY_W = 640;
     const uint16_t DISPLAY_H = 400;
@@ -135,51 +232,49 @@ static void draw_hand_detection_overlay(const int8_t *output_grid)
     int16_t left_edge_y = -1;
     int16_t right_edge_y = -1;
 
-    for (int gy = 0; gy < FOMO_GRID_SIZE; gy++) {
-        for (int gx = 0; gx < FOMO_GRID_SIZE; gx++) {
-            int idx = (gy * FOMO_GRID_SIZE + gx) * FOMO_NUM_CLASSES;
+    /* Iterate cubes (one detection each), not raw cells. */
+    for (int i = 0; i < s_cube_count; i++) {
+        const cube_t *c = &s_cubes[i];
+        /* Centroid in grid space (float to keep mid-cube precision) */
+        float cx_f = c->x + (c->width  - 1) * 0.5f;
+        float cy_f = c->y + (c->height - 1) * 0.5f;
 
-            /* Class 0 = background, class 1 = hand */
-            int8_t hand_score = output_grid[idx + 1];
+        int16_t py = (int16_t)(cy_f * CELL_HEIGHT + (CELL_HEIGHT - SPRITE_SIZE) / 2);
+        if (py < 0) py = 0;
+        if (py > DISPLAY_H - SPRITE_SIZE) py = DISPLAY_H - SPRITE_SIZE;
 
-            if (hand_score <= DETECTION_THRESHOLD) {
-                continue;
+        /* Use the centroid column to decide on-screen vs edge indicator */
+        int gx_center = (int)(cx_f + 0.5f);
+
+        if (gx_center >= CENTER_START && gx_center <= CENTER_END) {
+            float rel_x = cx_f - CENTER_START;
+            uint16_t cell_width = DISPLAY_W / CENTER_COLS;
+            int16_t px = (int16_t)(rel_x * cell_width + (cell_width - SPRITE_SIZE) / 2);
+
+            if (px < 0) px = 0;
+            if (px > DISPLAY_W - SPRITE_SIZE) px = DISPLAY_W - SPRITE_SIZE;
+
+            uint8_t meta[8] = {
+                (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
+                (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
+                0, SPRITE_SIZE,
+                2,
+                HAND_COLOR
+            };
+
+            uint8_t *payload = malloc(8 + DOT_SPRITE_SIZE);
+            if (payload) {
+                memcpy(payload, meta, 8);
+                memcpy(payload + 8, dot_sprite, DOT_SPRITE_SIZE);
+                spi_write(FPGA, 0x12, payload, 8 + DOT_SPRITE_SIZE);
+                free(payload);
             }
-
-            int16_t py = gy * CELL_HEIGHT + (CELL_HEIGHT - SPRITE_SIZE) / 2;
-            if (py < 0) py = 0;
-            if (py > DISPLAY_H - SPRITE_SIZE) py = DISPLAY_H - SPRITE_SIZE;
-
-            if (gx >= CENTER_START && gx <= CENTER_END) {
-                int rel_x = gx - CENTER_START;
-                uint16_t cell_width = DISPLAY_W / CENTER_COLS;
-                int16_t px = rel_x * cell_width + (cell_width - SPRITE_SIZE) / 2;
-
-                if (px < 0) px = 0;
-                if (px > DISPLAY_W - SPRITE_SIZE) px = DISPLAY_W - SPRITE_SIZE;
-
-                uint8_t meta[8] = {
-                    (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
-                    (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
-                    0, SPRITE_SIZE,
-                    2,
-                    HAND_COLOR
-                };
-
-                uint8_t *payload = malloc(8 + DOT_SPRITE_SIZE);
-                if (payload) {
-                    memcpy(payload, meta, 8);
-                    memcpy(payload + 8, dot_sprite, DOT_SPRITE_SIZE);
-                    spi_write(FPGA, 0x12, payload, 8 + DOT_SPRITE_SIZE);
-                    free(payload);
-                }
-            } else if (gx < CENTER_START) {
-                left_edge = true;
-                left_edge_y = py;
-            } else {
-                right_edge = true;
-                right_edge_y = py;
-            }
+        } else if (gx_center < CENTER_START) {
+            left_edge = true;
+            left_edge_y = py;
+        } else {
+            right_edge = true;
+            right_edge_y = py;
         }
     }
 
@@ -402,7 +497,7 @@ static void bt_send_blocking(const uint8_t *data, size_t length)
     /* Drop and continue rather than block forever. */
 }
 
-/* Send the 96x96 RGB image (chunked) + separator + 8x8x2 prediction grid
+/* Send the 64x64 RGB image (chunked) + separator + 8x8x2 prediction grid
  * (chunked) + end marker. Mirrors the FOMO_BEER_CAN protocol. */
 static int send_image_and_predictions(const uint8_t *rgb_buffer,
                                        const int8_t *output_grid)
@@ -456,42 +551,12 @@ static int send_image_and_predictions(const uint8_t *rgb_buffer,
     return 0;
 }
 
-/* Send only the 96x96 RGB image + end marker. No separator, no predictions.
- * Used by send_image() for capture-pipeline isolation testing. */
-static int send_image_only(const uint8_t *rgb_buffer)
-{
-    uint8_t *chunk_buffer = malloc(BT_CHUNK_SIZE + 1);
-    if (!chunk_buffer) {
-        return -1;
-    }
-    chunk_buffer[0] = 0x01;
-
-    size_t offset = 0;
-    while (offset < RGB_OUTPUT_BYTES) {
-        size_t chunk = (RGB_OUTPUT_BYTES - offset > BT_CHUNK_SIZE)
-                           ? BT_CHUNK_SIZE
-                           : (RGB_OUTPUT_BYTES - offset);
-        memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
-        bt_send_blocking(chunk_buffer, chunk + 1);
-        offset += chunk;
-        nrfx_systick_delay_ms(20);
-        reload_watchdog(NULL, NULL);
-    }
-
-    nrfx_systick_delay_ms(100);
-    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
-    bt_send_blocking(end_marker, 5);
-
-    free(chunk_buffer);
-    return 0;
-}
-
 /*-----------------------------------------------*/
 /* Acquire one RGB frame                         */
 /*-----------------------------------------------*/
 
 /* Capture one frame from the camera (or use DEV_KIT test data), decode it
- * to RGB and upscale into the static s_rgb_buffer.
+ * to RGB and downscale into the static s_rgb_buffer.
  *
  * Memory pattern: only the JPEG buffer touches the heap (transient).
  * temp + rgb are static (BSS) so no fragmentation, no peak heap pressure
@@ -522,7 +587,7 @@ static int acquire_rgb_frame(lua_State *L, bool skip_camera_setup)
     LOG("DEV_KIT hand: decoded %dx%d", actual_width, actual_height);
 
     reload_watchdog(NULL, NULL);
-    upscale_90_to_96_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
+    downscale_90_to_64_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
     return 0;
 
 #else
@@ -547,7 +612,7 @@ static int acquire_rgb_frame(lua_State *L, bool skip_camera_setup)
     }
 
     /* Read JPEG straight into s_rgb_buffer (scratch reuse - it will be
-     * overwritten by the upscale step below). No heap allocation. */
+     * overwritten by the downscale step below). No heap allocation. */
     size_t jpeg_size = read_jpeg_into(L, s_rgb_buffer);
     if (jpeg_size == 0) {
         luaL_error(L, "JPEG read failed or empty");
@@ -569,7 +634,7 @@ static int acquire_rgb_frame(lua_State *L, bool skip_camera_setup)
 
     /* Upscale s_temp_buffer -> s_rgb_buffer (overwrites the consumed JPEG bytes) */
     reload_watchdog(NULL, NULL);
-    upscale_90_to_96_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
+    downscale_90_to_64_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
     return 0;
 #endif
 }
@@ -603,6 +668,7 @@ static int run_hand_detection_common(lua_State *L, bool skip_camera_setup)
 
     LOG("Hand detect inference complete");
 
+    build_cubes(output_grid);
     draw_hand_detection_overlay(output_grid);
     reload_watchdog(NULL, NULL);
 
@@ -623,7 +689,7 @@ static int run_hand_detection_common(lua_State *L, bool skip_camera_setup)
  * wake + auto-exposure each call).
  *
  * Bluetooth protocol (matches FOMO_BEER_CAN format):
- *   [IMAGE DATA]   27648 bytes (96x96x3 RGB), 200-byte chunks each prefixed 0x01
+ *   [IMAGE DATA]   12288 bytes (64x64x3 RGB), 200-byte chunks each prefixed 0x01
  *   [SEPARATOR]    0x01 0xFE 0xFE
  *   [PREDICTIONS]  128 bytes (8x8x2 int8 grid), 200-byte chunks each prefixed 0x01
  *   [END MARKER]   0x01 0xFF 0xFF 0x00 0x00
@@ -643,44 +709,11 @@ static int lua_experiment_run_hand_detection_fast(lua_State *L)
 }
 
 /**
- * Capture-only diagnostic: full camera pipeline (capture + decode + upscale)
- * but NO inference, NO predictions. Streams just the 96x96 RGB image so
- * the host can verify capture/decode/upscale are working in isolation.
- *
- * Optional bool arg: skip_camera_setup (default false = full pipeline).
- *
- * Bluetooth protocol:
- *   [IMAGE DATA]   27648 bytes (96x96x3 RGB), 200-byte chunks each prefixed 0x01
- *   [END MARKER]   0x01 0xFF 0xFF 0x00 0x00
- */
-static int lua_experiment_send_image(lua_State *L)
-{
-    bool skip_camera_setup = false;
-    if (lua_isboolean(L, 1)) {
-        skip_camera_setup = lua_toboolean(L, 1);
-    }
-
-    if (acquire_rgb_frame(L, skip_camera_setup) != 0) {
-        return 0;  /* luaL_error already raised */
-    }
-
-    if (send_image_only(s_rgb_buffer) != 0) {
-        luaL_error(L, "BT chunk allocation failed");
-        return 0;
-    }
-
-    lua_pushinteger(L, RGB_OUTPUT_BYTES);
-    return 1;
-}
-
-/**
  * Run hand detection benchmark - looped local inference, no Bluetooth in loop.
  * Lua: result = frame.experiment.run_hand_detection_benchmark(iterations)
  *
- * Memory pattern: temp + rgb buffers persist across iterations (51.6 KB
- * sustained). The small JPEG buffer (8 KB) is allocated/freed inside each
- * iteration so peak heap is identical to the single-shot path: ~60 KB
- * during JPEG read, ~52 KB during upscale.
+ * Memory pattern: temp + rgb buffers persist across iterations in BSS.
+ * No heap allocation in the loop.
  *
  * Returns table with: iterations, hand_detections, total_time_ms,
  * avg_time_ms, and per-stage breakdown in ms.
@@ -792,7 +825,7 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
 
         t0 = DWT->CYCCNT;
         reload_watchdog(NULL, NULL);
-        upscale_90_to_96_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
+        downscale_90_to_64_rgb_with_rotation(s_temp_buffer, s_rgb_buffer);
         t1 = DWT->CYCCNT;
         time_upscale += (t1 - t0);
 
@@ -817,6 +850,7 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
         if (any_hand) hand_count++;
 
         t0 = DWT->CYCCNT;
+        build_cubes(output_grid);
         draw_hand_detection_overlay(output_grid);
         reload_watchdog(NULL, NULL);
         t1 = DWT->CYCCNT;
@@ -875,6 +909,24 @@ static int lua_experiment_run_hand_detection_benchmark(lua_State *L)
     return 1;
 }
 
+/**
+ * Set the FOMO detection threshold in float (post-softmax) space.
+ * Lua: frame.experiment.set_threshold(0.3)
+ * EI default = 0.5; lower values give more recall but also more false
+ * positives. Use the LOG line "FOMO heatmap: max=X" to pick a sensible value.
+ */
+static int lua_experiment_set_threshold(lua_State *L)
+{
+    lua_Number t = luaL_checknumber(L, 1);
+    if (t < 0.0 || t > 1.0) {
+        luaL_error(L, "threshold must be in [0.0, 1.0]");
+        return 0;
+    }
+    s_threshold = (float)t;
+    LOG("FOMO threshold set to %.3f", (double)s_threshold);
+    return 0;
+}
+
 /*-----------------------------------------------*/
 /* Experiment Interface Implementation           */
 /*-----------------------------------------------*/
@@ -897,6 +949,6 @@ void experiment_register_lua_functions(lua_State *L, int experiment_table)
     lua_pushcfunction(L, lua_experiment_run_hand_detection_benchmark);
     lua_setfield(L, -2, "run_hand_detection_benchmark");
 
-    lua_pushcfunction(L, lua_experiment_send_image);
-    lua_setfield(L, -2, "send_image");
+    lua_pushcfunction(L, lua_experiment_set_threshold);
+    lua_setfield(L, -2, "set_threshold");
 }

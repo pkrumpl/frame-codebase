@@ -92,6 +92,15 @@ static tflite::MicroInterpreter* fomo_interpreter = nullptr;
 static FomoOpResolver* fomo_op_resolver = nullptr;
 static bool fomo_initialized = false;
 
+// Cached quantization parameters (filled at init from the model's tensors).
+// Standard EI/MobileNetV2 export: input scale ~ 1/255, zp = -128;
+// output (post-softmax) scale = 1/256, zp = -128. We do not assume - we read.
+static float fomo_in_scale = 0.0f;
+static int32_t fomo_in_zero_point = 0;
+static float fomo_out_scale = 0.0f;
+static int32_t fomo_out_zero_point = 0;
+static bool fomo_input_fast_path = false;  // true if int8 = uint8 - 128 is exact
+
 /**
  * Initialize the FOMO object detection model
  */
@@ -176,9 +185,36 @@ tflm_status_t fomo_initialize(void) {
   MicroPrintf("FOMO arena used: %u bytes (of %u available)",
               arena_used, kFomoTensorArenaSize);
 
+  // Cache quant params and detect whether the input fast path applies
+  // (input scale within 1% of 1/255 AND zero_point == -128).
+  fomo_in_scale       = input->params.scale;
+  fomo_in_zero_point  = input->params.zero_point;
+  fomo_out_scale      = output->params.scale;
+  fomo_out_zero_point = output->params.zero_point;
+
+  const float ideal = 1.0f / 255.0f;
+  fomo_input_fast_path =
+      (fomo_in_zero_point == -128) &&
+      (fomo_in_scale > ideal * 0.99f) &&
+      (fomo_in_scale < ideal * 1.01f);
+
+  MicroPrintf("FOMO input quant: scale=%f zp=%d (fast_path=%d)",
+              (double)fomo_in_scale, (int)fomo_in_zero_point,
+              (int)fomo_input_fast_path);
+  MicroPrintf("FOMO output quant: scale=%f zp=%d",
+              (double)fomo_out_scale, (int)fomo_out_zero_point);
+
   fomo_initialized = true;
   MicroPrintf("FOMO model initialized successfully!");
   return TFLM_OK;
+}
+
+void fomo_get_quant_params(float *in_scale, int32_t *in_zero_point,
+                           float *out_scale, int32_t *out_zero_point) {
+  if (in_scale)       *in_scale       = fomo_in_scale;
+  if (in_zero_point)  *in_zero_point  = fomo_in_zero_point;
+  if (out_scale)      *out_scale      = fomo_out_scale;
+  if (out_zero_point) *out_zero_point = fomo_out_zero_point;
 }
 
 /**
@@ -204,10 +240,28 @@ tflm_status_t fomo_infer(const uint8_t* input_data_u8, int8_t* output_grid) {
   // Get input tensor
   TfLiteTensor* input = fomo_interpreter->input(0);
 
-  // Convert uint8 [0-255] to int8 [-128, 127] (per byte; works for grayscale or RGB)
+  // Quantize uint8 [0-255] -> int8 using model's actual scale/zero_point.
+  // Fast path (typical EI MobileNetV2 export, scale ~ 1/255, zp = -128):
+  //   int8 = uint8 - 128
+  // Slow path (any other quant params):
+  //   int8 = round((uint8/255) / scale) + zero_point
+  // Per Edge Impulse's tflite_helper.h.
   int8_t* input_data = input->data.int8;
-  for (int i = 0; i < FOMO_INPUT_SIZE; i++) {
-    input_data[i] = static_cast<int8_t>(static_cast<int16_t>(input_data_u8[i]) - 128);
+  if (fomo_input_fast_path) {
+    for (int i = 0; i < FOMO_INPUT_SIZE; i++) {
+      input_data[i] = static_cast<int8_t>(static_cast<int16_t>(input_data_u8[i]) - 128);
+    }
+  } else {
+    const float inv_255 = 1.0f / 255.0f;
+    const float inv_scale = 1.0f / fomo_in_scale;
+    for (int i = 0; i < FOMO_INPUT_SIZE; i++) {
+      float normalized = input_data_u8[i] * inv_255;
+      int32_t q = static_cast<int32_t>(normalized * inv_scale + (normalized >= 0 ? 0.5f : -0.5f))
+                  + fomo_in_zero_point;
+      if (q < -128) q = -128;
+      if (q >  127) q =  127;
+      input_data[i] = static_cast<int8_t>(q);
+    }
   }
 
   // Run inference

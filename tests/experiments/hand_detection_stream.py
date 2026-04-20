@@ -14,10 +14,10 @@ import matplotlib.patches as patches
 from frameutils import Bluetooth
 
 # Image dimensions (must match OUT_DIM in experiment_fomo_hand.c)
-IMAGE_WIDTH = 96
-IMAGE_HEIGHT = 96
+IMAGE_WIDTH = 64
+IMAGE_HEIGHT = 64
 NUM_CHANNELS = 3
-EXPECTED_IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT * NUM_CHANNELS  # 27648
+EXPECTED_IMAGE_BYTES = IMAGE_WIDTH * IMAGE_HEIGHT * NUM_CHANNELS  # 12288
 
 # FOMO model output dimensions (must match FOMO_GRID_SIZE / FOMO_NUM_CLASSES)
 GRID_SIZE = 8

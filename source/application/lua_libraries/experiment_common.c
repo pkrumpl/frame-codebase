@@ -347,6 +347,43 @@ void upscale_90_to_96_rgb_with_rotation(const uint8_t *src, uint8_t *dst)
     }
 }
 
+void downscale_90_to_64_rgb_with_rotation(const uint8_t *src, uint8_t *dst)
+{
+    const int SRC_SIZE = 90;
+    const int DST_SIZE = 64;
+    /* Map full src extent to full dst extent: scale = (SRC-1)/(DST-1) so
+     * dst[0] samples src[0] and dst[DST-1] samples src[SRC-1]. */
+    const float scale = (float)(SRC_SIZE - 1) / (float)(DST_SIZE - 1);
+
+    for (int dy = 0; dy < DST_SIZE; dy++) {
+        for (int dx = 0; dx < DST_SIZE; dx++) {
+            float sx = dx * scale;
+            float sy = dy * scale;
+            int x0 = (int)sx;
+            int y0 = (int)sy;
+            int x1 = (x0 < SRC_SIZE - 1) ? x0 + 1 : SRC_SIZE - 1;
+            int y1 = (y0 < SRC_SIZE - 1) ? y0 + 1 : SRC_SIZE - 1;
+            float fx = sx - x0;
+            float fy = sy - y0;
+
+            for (int c = 0; c < 3; c++) {
+                float v00 = src[(y0 * SRC_SIZE + x0) * 3 + c];
+                float v10 = src[(y0 * SRC_SIZE + x1) * 3 + c];
+                float v01 = src[(y1 * SRC_SIZE + x0) * 3 + c];
+                float v11 = src[(y1 * SRC_SIZE + x1) * 3 + c];
+
+                float v = v00 * (1 - fx) * (1 - fy) +
+                          v10 * fx * (1 - fy) +
+                          v01 * (1 - fx) * fy +
+                          v11 * fx * fy;
+
+                /* 90 CCW rotation: (dx, dy) -> (dy, DST_SIZE-1-dx) */
+                dst[((DST_SIZE - 1 - dx) * DST_SIZE + dy) * 3 + c] = (uint8_t)(v + 0.5f);
+            }
+        }
+    }
+}
+
 #endif /* ML_EXPERIMENT_VWW_RGB || ML_EXPERIMENT_FOMO_HAND_DETECTION */
 
 /*-----------------------------------------------*/

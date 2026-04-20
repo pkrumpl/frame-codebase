@@ -90,6 +90,12 @@ int jpeg_decode_rgb_scaled(const uint8_t *jpeg_data, size_t jpeg_size,
  */
 void upscale_90_to_96_rgb_with_rotation(const uint8_t *src, uint8_t *dst);
 
+/**
+ * Bilinear downscale from 90x90 to 64x64 RGB with 90 CCW rotation.
+ * Source must be 90*90*3 = 24300 bytes; dst must be 64*64*3 = 12288 bytes.
+ */
+void downscale_90_to_64_rgb_with_rotation(const uint8_t *src, uint8_t *dst);
+
 #endif /* ML_EXPERIMENT_VWW_RGB || ML_EXPERIMENT_FOMO_HAND_DETECTION */
 
 /*-----------------------------------------------*/
