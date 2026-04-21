@@ -83,9 +83,12 @@ int boot_safety_init(void)
     return 0;
 }
 
+// NOTE: must use the sd_power_gpregret_clr SVC rather than writing NRF_POWER
+// directly. After sd_softdevice_enable() the SoftDevice takes exclusive ownership
+// of the POWER peripheral; a direct register access from the application triggers
+// the SoftDevice fault handler ("Softdevice crashed"). This function is called
+// from run_lua() after bluetooth_setup(), so the SoftDevice is always enabled here.
 void boot_safety_mark_boot_successful(void)
 {
-    uint32_t boot_counter = 0;
-    NRF_POWER->GPREGRET2 = (NRF_POWER->GPREGRET2 & ~GPREGRET_BOOT_COUNTER_MASK)
-                            | ((boot_counter & 0xFF) << GPREGRET_BOOT_COUNTER_SHIFT);
+    sd_power_gpregret_clr(1, GPREGRET_BOOT_COUNTER_MASK);
 }
