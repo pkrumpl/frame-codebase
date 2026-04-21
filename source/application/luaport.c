@@ -193,7 +193,8 @@ void run_lua(bool is_paired)
     status = show_pairing_screen(is_paired, false);
 
     // Before running REPL, mark boot as successful to reset boot safety counter
-    boot_safety_mark_boot_successful();
+    // TODO: enable again to avoid entering DFU mode after 5 reboots
+    // boot_safety_mark_boot_successful();
 
     //  Run REPL
     while (true)
