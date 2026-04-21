@@ -42,6 +42,22 @@ extern const size_t test_jpeg_size;
 #define RGB_CAPTURE_BYTES  (SCALED_SIZE * SCALED_SIZE * NUM_CHANNELS)  /* 24,300 */
 #define RGB_OUTPUT_BYTES   (OUTPUT_SIZE * OUTPUT_SIZE * NUM_CHANNELS)  /* 27,648 */
 
+/* Static working buffers in BSS. Rationale:
+ *   - Streaming inference calls these every frame; per-call malloc/free
+ *     of buffers this large fragments the heap fast (a freed 25 KB
+ *     slot can't satisfy a 27 KB request) which then causes the next
+ *     allocation to fail mid-stream.
+ *   - Static placement is contiguous at link time, so no allocator
+ *     involvement and no fragmentation.
+ *   - s_rgb_buffer is dual-purposed: it holds the raw JPEG during
+ *     read+decode, then the final 96x96 RGB image after upscale. The
+ *     decoder consumes the JPEG bytes before the upscale overwrites
+ *     them, so the reuse is safe and saves ~25 KB vs a separate JPEG
+ *     buffer. JPEG must fit in RGB_OUTPUT_BYTES (27,648 B), which is
+ *     above the typical 720x720 MEDIUM-quality JPEG size. */
+static uint8_t s_temp_buffer[RGB_CAPTURE_BYTES];  /* 24,300 B (decode dst) */
+static uint8_t s_rgb_buffer[RGB_OUTPUT_BYTES];    /* 27,648 B (JPEG then RGB) */
+
 /*-----------------------------------------------*/
 /* Person Detection Overlay                      */
 /*-----------------------------------------------*/
@@ -111,7 +127,10 @@ static void draw_person_detection_overlay(bool is_person, int8_t person_score)
  */
 static int lua_experiment_run_person_detection(lua_State *L)
 {
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
+    /* Max JPEG size == RGB_OUTPUT_BYTES because the JPEG is read into
+     * s_rgb_buffer (which is unused until upscale). 27,648 B is above
+     * typical 720x720 MEDIUM JPEG sizes. */
+    const size_t MAX_JPEG_SIZE = RGB_OUTPUT_BYTES;
     const size_t CHUNK_SIZE = 200;
     const size_t READ_CHUNK_SIZE = 512;
 
@@ -125,24 +144,19 @@ static int lua_experiment_run_person_detection(lua_State *L)
         return 0;
     }
 
-    /* Allocate buffers (RGB: 3 bytes per pixel) */
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    uint8_t *temp_buffer = malloc(RGB_CAPTURE_BYTES);  /* 90x90x3 = 24.3KB */
-    uint8_t *rgb_buffer = malloc(RGB_OUTPUT_BYTES);    /* 96x96x3 = 27.6KB */
-    if (!jpeg_buffer || !temp_buffer || !rgb_buffer) {
-        if (jpeg_buffer) free(jpeg_buffer);
-        if (temp_buffer) free(temp_buffer);
-        if (rgb_buffer) free(rgb_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
+    /* Static buffers (see file-scope declarations). jpeg_buffer and
+     * rgb_buffer alias the same 27.6 KB BSS region - the JPEG bytes are
+     * consumed before the upscale overwrites them. */
+    uint8_t *jpeg_buffer = s_rgb_buffer;
+    uint8_t *temp_buffer = s_temp_buffer;
+    uint8_t *rgb_buffer  = s_rgb_buffer;
 
     memset(temp_buffer, 0, RGB_CAPTURE_BYTES);
     memset(rgb_buffer, 0, RGB_OUTPUT_BYTES);
 
 #ifdef DEV_KIT_BUILD
     /* DEV_KIT: Use hardcoded test JPEG data instead of camera */
-    free(jpeg_buffer);  /* Not needed for test path */
+    (void)jpeg_buffer;  /* not used in test path (would alias s_rgb_buffer anyway) */
     LOG("DEV_KIT RGB: Using hardcoded test JPEG data (%u bytes)", test_jpeg_size);
 
     /* Decode test JPEG to 90x90 RGB */
@@ -152,8 +166,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
                                     &actual_width, &actual_height,
                                     3, false);  /* scale=3 (1/8), no rotation */
     if (result != 0) {
-        free(temp_buffer);
-        free(rgb_buffer);
         luaL_error(L, "RGB decode failed: %d", result);
         return 0;
     }
@@ -184,18 +196,12 @@ static int lua_experiment_run_person_detection(lua_State *L)
         lua_getfield(L, -1, "auto");
         if (!lua_isfunction(L, -1)) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "camera.auto not found");
             return 0;
         }
         lua_newtable(L);
         if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "camera.auto failed");
             return 0;
         }
@@ -210,9 +216,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
     lua_getfield(L, -1, "capture");
     if (!lua_isfunction(L, -1)) {
         lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
         luaL_error(L, "camera.capture not found");
         return 0;
     }
@@ -223,9 +226,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
     lua_setfield(L, -2, "quality");
     if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
         lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
         luaL_error(L, "capture failed");
         return 0;
     }
@@ -240,9 +240,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
         lua_getfield(L, -1, "image_ready");
         if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "image_ready failed");
             return 0;
         }
@@ -255,9 +252,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
     }
 
     if (!ready) {
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(rgb_buffer);
         luaL_error(L, "capture timeout");
         return 0;
     }
@@ -271,9 +265,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
         lua_pushinteger(L, READ_CHUNK_SIZE);
         if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "read failed");
             return 0;
         }
@@ -299,11 +290,9 @@ static int lua_experiment_run_person_detection(lua_State *L)
                                     temp_buffer, SCALED_SIZE, SCALED_SIZE,
                                     &actual_width, &actual_height,
                                     3, false);  /* scale=3 (1/8), no rotation */
-    free(jpeg_buffer);
+    /* jpeg_buffer bytes no longer needed - upscale below overwrites s_rgb_buffer */
 
     if (result != 0) {
-        free(temp_buffer);
-        free(rgb_buffer);
         luaL_error(L, "RGB decode failed: %d", result);
         return 0;
     }
@@ -311,10 +300,11 @@ static int lua_experiment_run_person_detection(lua_State *L)
     LOG("Person detect RGB: decoded %dx%d, UPSCALING to %dx%d", actual_width, actual_height, OUTPUT_SIZE, OUTPUT_SIZE);
 #endif /* !DEV_KIT_BUILD */
 
-    /* ===== Step 7: UPSCALE 90x90 RGB to 96x96 RGB with 90 CCW rotation ===== */
+    /* ===== Step 7: UPSCALE 90x90 RGB to 96x96 RGB with 90 CCW rotation =====
+     * Reads s_temp_buffer, writes s_rgb_buffer (overwriting the JPEG bytes
+     * that were previously there via jpeg_buffer alias). */
     reload_watchdog(NULL, NULL);
     upscale_90_to_96_rgb_with_rotation(temp_buffer, rgb_buffer);
-    free(temp_buffer);
 
     /* ===== Step 8: Run person detection inference ===== */
     reload_watchdog(NULL, NULL);
@@ -322,7 +312,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
 
     tflm_status_t infer_status = person_detect_infer(rgb_buffer, output_scores);
     if (infer_status != TFLM_OK) {
-        free(rgb_buffer);
         luaL_error(L, "Person detect RGB inference failed");
         return 0;
     }
@@ -344,7 +333,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
 
     uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
     if (!chunk_buffer) {
-        free(rgb_buffer);
         luaL_error(L, "chunk allocation failed");
         return 0;
     }
@@ -358,8 +346,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
         nrfx_systick_delay_ms(20);
         reload_watchdog(NULL, NULL);
     }
-
-    free(rgb_buffer);
 
     /* ===== Step 11: Send separator ===== */
     nrfx_systick_delay_ms(50);
@@ -406,28 +392,17 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         return 0;
     }
 
-    /* Allocate buffers - reused across all iterations */
-    uint8_t *temp_buffer = malloc(RGB_CAPTURE_BYTES);  /* 90x90x3 = 24.3KB */
-    uint8_t *rgb_buffer = malloc(RGB_OUTPUT_BYTES);    /* 96x96x3 = 27.6KB */
-    if (!temp_buffer || !rgb_buffer) {
-        if (temp_buffer) free(temp_buffer);
-        if (rgb_buffer) free(rgb_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
+    /* Static buffers (see file-scope). jpeg_buffer aliases s_rgb_buffer;
+     * temp_buffer is separate. No heap allocation per iteration. */
+    uint8_t *temp_buffer = s_temp_buffer;
+    uint8_t *rgb_buffer  = s_rgb_buffer;
 
 #ifndef DEV_KIT_BUILD
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
+    const size_t MAX_JPEG_SIZE = RGB_OUTPUT_BYTES;
     const size_t READ_CHUNK_SIZE = 512;
     size_t jpeg_size = 0;
 
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    if (!jpeg_buffer) {
-        free(temp_buffer);
-        free(rgb_buffer);
-        luaL_error(L, "JPEG allocation failed");
-        return 0;
-    }
+    uint8_t *jpeg_buffer = s_rgb_buffer;
 
     /* ===== Initialize camera ONCE before benchmark loop ===== */
     lua_getglobal(L, "frame");
@@ -451,18 +426,12 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         lua_getfield(L, -1, "auto");
         if (!lua_isfunction(L, -1)) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "camera.auto not found");
             return 0;
         }
         lua_newtable(L);
         if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "camera.auto failed");
             return 0;
         }
@@ -513,8 +482,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
                                         &actual_width, &actual_height,
                                         3, false);  /* scale=3 (1/8), no rotation */
         if (result != 0) {
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "RGB decode failed: %d", result);
             return 0;
         }
@@ -532,9 +499,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         lua_getfield(L, -1, "capture");
         if (!lua_isfunction(L, -1)) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "camera.capture not found");
             return 0;
         }
@@ -545,9 +509,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         lua_setfield(L, -2, "quality");
         if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "capture failed");
             return 0;
         }
@@ -566,9 +527,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
             lua_getfield(L, -1, "image_ready");
             if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
                 lua_pop(L, 3);
-                free(jpeg_buffer);
-                free(temp_buffer);
-                free(rgb_buffer);
                 luaL_error(L, "image_ready failed");
                 return 0;
             }
@@ -581,9 +539,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         }
 
         if (!ready) {
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "capture timeout");
             return 0;
         }
@@ -601,9 +556,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
             lua_pushinteger(L, READ_CHUNK_SIZE);
             if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
                 lua_pop(L, 3);
-                free(jpeg_buffer);
-                free(temp_buffer);
-                free(rgb_buffer);
                 luaL_error(L, "read failed");
                 return 0;
             }
@@ -632,9 +584,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
                                         &actual_width, &actual_height,
                                         3, false);  /* scale=3 (1/8), no rotation */
         if (result != 0) {
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(rgb_buffer);
             luaL_error(L, "RGB decode failed: %d", result);
             return 0;
         }
@@ -658,11 +607,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
 
         tflm_status_t infer_status = person_detect_infer(rgb_buffer, output_scores);
         if (infer_status != TFLM_OK) {
-            free(temp_buffer);
-            free(rgb_buffer);
-#ifndef DEV_KIT_BUILD
-            free(jpeg_buffer);
-#endif
             luaL_error(L, "Person detect RGB inference failed");
             return 0;
         }
@@ -698,12 +642,7 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
     uint32_t total_ms = elapsed_cycles / 64000;  /* 64MHz = 64000 cycles/ms */
     uint32_t avg_ms = total_ms / (uint32_t)iterations;
 
-    /* Cleanup */
-    free(temp_buffer);
-    free(rgb_buffer);
-#ifndef DEV_KIT_BUILD
-    free(jpeg_buffer);
-#endif
+    /* Static buffers - no free needed. */
 
     /* Convert timing to milliseconds */
     uint32_t memset_ms = time_memset / 64000;
