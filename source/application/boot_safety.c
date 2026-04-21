@@ -82,3 +82,10 @@ int boot_safety_init(void)
 
     return 0;
 }
+
+void boot_safety_mark_boot_successful(void)
+{
+    uint32_t boot_counter = 0;
+    NRF_POWER->GPREGRET2 = (NRF_POWER->GPREGRET2 & ~GPREGRET_BOOT_COUNTER_MASK)
+                            | ((boot_counter & 0xFF) << GPREGRET_BOOT_COUNTER_SHIFT);
+}

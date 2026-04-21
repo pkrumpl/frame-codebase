@@ -36,4 +36,11 @@ void enter_dfu_mode(void);
  */
 int boot_safety_init(void);
 
+/*
+ * Mark the current boot as successful.
+ *
+ * This function resets the boot counter to 0, indicating a successful boot.
+ */
+void boot_safety_mark_boot_successful(void);
+
 #endif // BOOT_SAFETY_H

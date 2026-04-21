@@ -25,6 +25,7 @@
 #include <string.h>
 #include <math.h>
 #include "bluetooth.h"
+#include "boot_safety.h"
 #include "error_logging.h"
 #include "frame_lua_libraries.h"
 #include "lauxlib.h"
@@ -191,6 +192,8 @@ void run_lua(bool is_paired)
     // Show splash screen
     status = show_pairing_screen(is_paired, false);
 
+    // Before running REPL, mark boot as successful to reset boot safety counter
+    boot_safety_mark_boot_successful();
 
     //  Run REPL
     while (true)
