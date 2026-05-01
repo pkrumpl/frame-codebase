@@ -40,6 +40,14 @@ ifeq ($(filter $(ML_EXPERIMENT),VWW VWW_RGB FOMO_BEER_CAN HELLO_WORLD),)
 $(error Invalid ML_EXPERIMENT value '$(ML_EXPERIMENT)'. Valid values: VWW, VWW_RGB, FOMO_BEER_CAN, HELLO_WORLD)
 endif
 
+# CMSIS-NN selection - default ON if not set in config.mk
+USE_CMSIS_NN ?= 1
+$(info USE_CMSIS_NN is $(USE_CMSIS_NN))
+
+ifeq ($(filter $(USE_CMSIS_NN),0 1),)
+$(error Invalid USE_CMSIS_NN value '$(USE_CMSIS_NN)'. Valid values: 0, 1)
+endif
+
 LIBRARIES := ../../libraries
 BUILD := ../../build
 
@@ -248,26 +256,38 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_allocation_info.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/conv_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/depthwise_conv_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pooling_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reshape.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reshape_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/softmax.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/softmax_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/add.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/add_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pad.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pad_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations_common.cc
+
+# TFLM kernel registration variants. Each of these ops has two
+# implementations - the CMSIS-NN-optimized one in kernels/cmsis_nn/ and
+# the upstream reference one in kernels/. They share Register_*() symbol
+# names, so we pick exactly one set per build.
+ifeq ($(USE_CMSIS_NN),1)
+TFLM_KERNEL_DIR := tensorflow/lite/micro/kernels/cmsis_nn
+else
+TFLM_KERNEL_DIR := tensorflow/lite/micro/kernels
+endif
+
+CPP_FILES += \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/conv.cc \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/depthwise_conv.cc \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/pooling.cc \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/softmax.cc \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/fully_connected.cc \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/add.cc \
+	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/pad.cc
 
 # Add HELLO_WORLD model data files
 ifeq ($(ML_EXPERIMENT),HELLO_WORLD)
@@ -346,10 +366,19 @@ COMMON_FLAGS += -DML_EXPERIMENT_$(ML_EXPERIMENT)
 #* Note: Disable microphone functionality to save RAM
 COMMON_FLAGS += -DFRAME_DISABLE_MICROPHONE
 
+# CMSIS-NN compile flag, gated by USE_CMSIS_NN. When disabled, the TFLM
+# kernels' internal `#ifdef CMSIS_NN` guards take the reference-impl
+# branch, and tflm_wrapper.cc emits a #pragma message warning.
+ifeq ($(USE_CMSIS_NN),1)
+CMSIS_NN_FLAG := -DCMSIS_NN
+else
+CMSIS_NN_FLAG :=
+endif
+
 # C-specific flags (includes local picolibc)
 CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) \
 	-std=gnu17 \
-	-DCMSIS_NN \
+	$(CMSIS_NN_FLAG) \
 	-DARM_MATH_DSP \
 	-DARM_MATH_LOOPUNROLL
 
@@ -362,7 +391,7 @@ CXXFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) \
 	-fno-use-cxa-atexit \
 	-DTF_LITE_STATIC_MEMORY \
 	-DTF_LITE_DISABLE_X86_NEON \
-	-DCMSIS_NN \
+	$(CMSIS_NN_FLAG) \
 	-DARM_MATH_DSP \
 	-DARM_MATH_LOOPUNROLL \
 	-D_READ_WRITE_RETURN_TYPE=_ssize_t \
