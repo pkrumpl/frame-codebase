@@ -40,13 +40,15 @@ ifeq ($(filter $(ML_EXPERIMENT),VWW VWW_RGB FOMO_BEER_CAN HELLO_WORLD),)
 $(error Invalid ML_EXPERIMENT value '$(ML_EXPERIMENT)'. Valid values: VWW, VWW_RGB, FOMO_BEER_CAN, HELLO_WORLD)
 endif
 
-# CMSIS-NN selection - default ON if not set in config.mk
 USE_CMSIS_NN ?= 1
 $(info USE_CMSIS_NN is $(USE_CMSIS_NN))
 
 ifeq ($(filter $(USE_CMSIS_NN),0 1),)
 $(error Invalid USE_CMSIS_NN value '$(USE_CMSIS_NN)'. Valid values: 0, 1)
 endif
+
+WATCHDOG_TIMEOUT_MS ?= 6000
+$(info WATCHDOG_TIMEOUT_MS is $(WATCHDOG_TIMEOUT_MS))
 
 LIBRARIES := ../../libraries
 BUILD := ../../build
@@ -270,24 +272,15 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations_common.cc
 
-# TFLM kernel registration variants. Each of these ops has two
-# implementations - the CMSIS-NN-optimized one in kernels/cmsis_nn/ and
-# the upstream reference one in kernels/. They share Register_*() symbol
-# names, so we pick exactly one set per build.
+# TFLM kernels with both CMSIS-NN and reference implementations. They
+# share Register_*() symbols, so exactly one variant is compiled per
+# build. Unique object names + explicit rules below bypass VPATH (which
+# would otherwise always pick the reference variant when both exist).
 ifeq ($(USE_CMSIS_NN),1)
-TFLM_KERNEL_DIR := tensorflow/lite/micro/kernels/cmsis_nn
+TFLM_KERNEL_SRC_DIR := $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn
 else
-TFLM_KERNEL_DIR := tensorflow/lite/micro/kernels
+TFLM_KERNEL_SRC_DIR := $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels
 endif
-
-CPP_FILES += \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/conv.cc \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/depthwise_conv.cc \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/pooling.cc \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/softmax.cc \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/fully_connected.cc \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/add.cc \
-	$(LIBRARIES)/tflm/$(TFLM_KERNEL_DIR)/pad.cc
 
 # Add HELLO_WORLD model data files
 ifeq ($(ML_EXPERIMENT),HELLO_WORLD)
@@ -353,6 +346,7 @@ COMMON_FLAGS += \
 	-DLFS_NO_WARN \
 	-DNDEBUG \
 	-DNRF52840_XXAA \
+	-DWATCHDOG_TIMEOUT_MS=$(WATCHDOG_TIMEOUT_MS) \
 
 # Check if build is for development kit and include flag if necessary
 ifdef DEV_KIT
@@ -366,9 +360,6 @@ COMMON_FLAGS += -DML_EXPERIMENT_$(ML_EXPERIMENT)
 #* Note: Disable microphone functionality to save RAM
 COMMON_FLAGS += -DFRAME_DISABLE_MICROPHONE
 
-# CMSIS-NN compile flag, gated by USE_CMSIS_NN. When disabled, the TFLM
-# kernels' internal `#ifdef CMSIS_NN` guards take the reference-impl
-# branch, and tflm_wrapper.cc emits a #pragma message warning.
 ifeq ($(USE_CMSIS_NN),1)
 CMSIS_NN_FLAG := -DCMSIS_NN
 else
@@ -440,7 +431,17 @@ EXPLICIT_OBJECTS := $(BUILD)/obj/common_core.o $(BUILD)/obj/common_kernels.o \
                     $(BUILD)/obj/kernel_util_kernels.o $(BUILD)/obj/kernel_util_micro.o \
                     $(BUILD)/obj/bluetooth_app.o $(BUILD)/obj/bluetooth_lua.o \
                     $(BUILD)/obj/compression_app.o $(BUILD)/obj/compression_lua.o
-ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS) $(EXPLICIT_OBJECTS)
+
+TFLM_KERNEL_OBJECTS := \
+    $(BUILD)/obj/tflm_kernel_conv.o \
+    $(BUILD)/obj/tflm_kernel_depthwise_conv.o \
+    $(BUILD)/obj/tflm_kernel_pooling.o \
+    $(BUILD)/obj/tflm_kernel_softmax.o \
+    $(BUILD)/obj/tflm_kernel_fully_connected.o \
+    $(BUILD)/obj/tflm_kernel_add.o \
+    $(BUILD)/obj/tflm_kernel_pad.o
+
+ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS) $(EXPLICIT_OBJECTS) $(TFLM_KERNEL_OBJECTS)
 
 # VPATH tells Make where to find source files
 VPATH := . .. lua_libraries \
@@ -523,6 +524,41 @@ $(BUILD)/obj/compression_lua.o: lua_libraries/compression.c
 	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
 
 $(BUILD)/obj/error_reporter.o: $(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_conv.o: $(TFLM_KERNEL_SRC_DIR)/conv.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_depthwise_conv.o: $(TFLM_KERNEL_SRC_DIR)/depthwise_conv.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_pooling.o: $(TFLM_KERNEL_SRC_DIR)/pooling.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_softmax.o: $(TFLM_KERNEL_SRC_DIR)/softmax.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_fully_connected.o: $(TFLM_KERNEL_SRC_DIR)/fully_connected.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_add.o: $(TFLM_KERNEL_SRC_DIR)/add.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_pad.o: $(TFLM_KERNEL_SRC_DIR)/pad.cc
 	@mkdir -p $(dir $@)
 	@echo "  CXX   $<"
 	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@

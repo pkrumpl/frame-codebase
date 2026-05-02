@@ -25,13 +25,17 @@
 #include "lua.h"
 #include "nrfx_wdt.h"
 
+#ifndef WATCHDOG_TIMEOUT_MS
+#define WATCHDOG_TIMEOUT_MS 6000
+#endif
+
 static nrfx_wdt_t watchdog = NRFX_WDT_INSTANCE(0);
 
 void init_watchdog(void)
 {
     nrfx_wdt_config_t watchdog_config = {
         .behaviour = NRF_WDT_BEHAVIOUR_RUN_SLEEP_MASK,
-        .reload_value = 6000,
+        .reload_value = WATCHDOG_TIMEOUT_MS,
         .interrupt_priority = NRFX_WDT_DEFAULT_CONFIG_IRQ_PRIORITY,
     };
 
