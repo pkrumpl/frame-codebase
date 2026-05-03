@@ -75,6 +75,37 @@ static struct {
     uint32_t cycles[BENCH_N];
 } s_bench_payload;
 
+/* Pipeline benchmark constants. Names deliberately distinct from the
+ * BENCH_* set above so the two benchmarks coexist without collision.
+ * The pipeline benchmark runs the full image-acquisition->preprocess->
+ * inference->display loop on real camera frames; the host receives one
+ * "cycle" per stage with PIPE_N per-iteration cycle counts inside. */
+#define PIPE_WARMUP   5
+#define PIPE_N        30
+#define PIPE_STAGES   7
+
+enum {
+    STAGE_CAPTURE     = 0,
+    STAGE_WAIT_READY  = 1,
+    STAGE_READ_JPEG   = 2,
+    STAGE_DECODE      = 3,
+    STAGE_UPSCALE     = 4,
+    STAGE_INFERENCE   = 5,
+    STAGE_DISPLAY     = 6,
+};
+
+/* Per-iteration DWT cycle counts collected during the measured loop.
+ * 7 stages * 30 iters * 4 B = 840 B BSS. Read only at TX time. */
+static uint32_t s_pipe_stage_cycles[PIPE_STAGES][PIPE_N];
+
+/* Wire payload for one stage: 4-byte LE stage index followed by PIPE_N
+ * raw DWT cycle counts (uint32 LE). 4 + 4*30 == 124 B. Filled per-stage
+ * at TX time; the measured loop only writes s_pipe_stage_cycles. */
+static struct {
+    uint32_t stage_idx;
+    uint32_t cycles[PIPE_N];
+} s_pipe_payload;
+
 /*-----------------------------------------------*/
 /* Person Detection Overlay                      */
 /*-----------------------------------------------*/
@@ -386,42 +417,239 @@ static int lua_experiment_run_person_detection(lua_State *L)
     return 1;
 }
 
+/* Forward decl: bench_send_with_retry is defined further below alongside
+ * the pure-inference benchmark; the pipeline benchmark TX path reuses
+ * it verbatim. */
+static bool bench_send_with_retry(const uint8_t *data, size_t length);
+
 /**
- * Run person detection benchmark - local inference without Bluetooth transmission
- * Lua: result = frame.experiment.run_person_detection_benchmark(iterations)
- * Returns: { iterations, person_detections, total_time_ms, avg_time_ms }
+ * Run one full pipeline iteration: capture -> wait_ready -> read_jpeg ->
+ * decode -> upscale -> inference -> display. When `collect` is true,
+ * each stage's DWT cycle delta is written into
+ * s_pipe_stage_cycles[STAGE_*][iter]; when false (warmup), the timings
+ * are discarded. The same code path runs in both phases so caches,
+ * branch predictors, FPGA SPI state, and the camera capture pipeline
+ * are warm by the time measurement starts.
+ *
+ * On any failure raises luaL_error and returns non-zero so the caller
+ * can bail out cleanly. Note: luaL_error long-jumps, so the non-zero
+ * return is defensive only.
  */
-static int lua_experiment_run_person_detection_benchmark(lua_State *L)
+static int pipe_run_iteration(lua_State *L, int iter, bool collect,
+                              int *out_is_person)
 {
     uint16_t actual_width, actual_height;
     int result;
+    uint32_t t0, t1;
 
-    /* Get iterations parameter */
-    lua_Integer iterations = luaL_checkinteger(L, 1);
-    if (iterations < 1 || iterations > 1000) {
-        luaL_error(L, "iterations must be between 1 and 1000");
-        return 0;
+    uint8_t *temp_buffer = s_temp_buffer;
+    uint8_t *rgb_buffer  = s_rgb_buffer;
+#ifndef DEV_KIT_BUILD
+    uint8_t *jpeg_buffer = s_rgb_buffer;  /* aliased; safe because the
+                                             decode below consumes JPEG
+                                             bytes before upscale
+                                             overwrites the buffer. */
+    const size_t MAX_JPEG_SIZE   = RGB_OUTPUT_BYTES;
+    const size_t READ_CHUNK_SIZE = 512;
+    size_t jpeg_size = 0;
+#endif
+
+    /* Bookkeeping memsets - NOT a measured stage. The user explicitly
+     * dropped the previous "memset" stage; the calls themselves stay
+     * because the inference path needs a clean buffer when the JPEG is
+     * shorter than RGB_OUTPUT_BYTES. */
+    memset(temp_buffer, 0, RGB_CAPTURE_BYTES);
+    memset(rgb_buffer, 0, RGB_OUTPUT_BYTES);
+#ifndef DEV_KIT_BUILD
+    memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
+#endif
+    reload_watchdog(NULL, NULL);
+
+#ifdef DEV_KIT_BUILD
+    /* DEV_KIT path: no camera. Stages 0/1/2 are forced to zero so they
+     * are visible in the host CSV but do not pollute statistics. The
+     * decode stage uses the embedded test JPEG. */
+    if (collect) {
+        s_pipe_stage_cycles[STAGE_CAPTURE][iter]    = 0;
+        s_pipe_stage_cycles[STAGE_WAIT_READY][iter] = 0;
+        s_pipe_stage_cycles[STAGE_READ_JPEG][iter]  = 0;
     }
 
+    t0 = DWT->CYCCNT;
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_rgb_scaled(test_jpeg_data, test_jpeg_size,
+                                    temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                    &actual_width, &actual_height,
+                                    3, false);  /* scale=3 (1/8), no rotation */
+    if (result != 0) {
+        luaL_error(L, "RGB decode failed: %d", result);
+        return 1;
+    }
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_DECODE][iter] = t1 - t0;
+#else
+    /* Stage 0: capture */
+    t0 = DWT->CYCCNT;
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "capture");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 3);
+        luaL_error(L, "camera.capture not found");
+        return 1;
+    }
+    lua_newtable(L);
+    lua_pushinteger(L, CAPTURE_SIZE);
+    lua_setfield(L, -2, "resolution");
+    lua_pushstring(L, "MEDIUM");
+    lua_setfield(L, -2, "quality");
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        lua_pop(L, 3);
+        luaL_error(L, "capture failed");
+        return 1;
+    }
+    lua_pop(L, 2);
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_CAPTURE][iter] = t1 - t0;
+
+    /* Stage 1: wait_ready */
+    t0 = DWT->CYCCNT;
+    {
+        uint32_t timeout = 1000000;
+        bool ready = false;
+        while (timeout-- && !ready) {
+            lua_getglobal(L, "frame");
+            lua_getfield(L, -1, "camera");
+            lua_getfield(L, -1, "image_ready");
+            if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+                lua_pop(L, 3);
+                luaL_error(L, "image_ready failed");
+                return 1;
+            }
+            ready = lua_toboolean(L, -1);
+            lua_pop(L, 3);
+            if (!ready) {
+                nrfx_systick_delay_us(10);
+            }
+            reload_watchdog(NULL, NULL);
+        }
+        if (!ready) {
+            luaL_error(L, "capture timeout");
+            return 1;
+        }
+    }
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_WAIT_READY][iter] = t1 - t0;
+
+    /* Stage 2: read_jpeg */
+    t0 = DWT->CYCCNT;
+    while (jpeg_size < MAX_JPEG_SIZE) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "read");
+        lua_pushinteger(L, READ_CHUNK_SIZE);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            luaL_error(L, "read failed");
+            return 1;
+        }
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 3);
+            break;
+        }
+        size_t chunk_len;
+        const char *chunk = lua_tolstring(L, -1, &chunk_len);
+        memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
+        jpeg_size += chunk_len;
+        lua_pop(L, 3);
+        reload_watchdog(NULL, NULL);
+    }
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_READ_JPEG][iter] = t1 - t0;
+
+    /* Stage 3: decode */
+    t0 = DWT->CYCCNT;
+    reload_watchdog(NULL, NULL);
+    result = jpeg_decode_rgb_scaled(jpeg_buffer, jpeg_size,
+                                    temp_buffer, SCALED_SIZE, SCALED_SIZE,
+                                    &actual_width, &actual_height,
+                                    3, false);  /* scale=3 (1/8), no rotation */
+    if (result != 0) {
+        luaL_error(L, "RGB decode failed: %d", result);
+        return 1;
+    }
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_DECODE][iter] = t1 - t0;
+#endif /* !DEV_KIT_BUILD */
+
+    /* Stage 4: upscale */
+    t0 = DWT->CYCCNT;
+    reload_watchdog(NULL, NULL);
+    upscale_90_to_96_rgb_with_rotation(temp_buffer, rgb_buffer);
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_UPSCALE][iter] = t1 - t0;
+
+    /* Stage 5: inference */
+    int8_t output_scores[PERSON_OUTPUT_SIZE];
+    t0 = DWT->CYCCNT;
+    reload_watchdog(NULL, NULL);
+    if (person_detect_infer(rgb_buffer, output_scores) != TFLM_OK) {
+        luaL_error(L, "Person detect RGB inference failed at iter %d", iter);
+        return 1;
+    }
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_INFERENCE][iter] = t1 - t0;
+
+    bool is_person = (output_scores[PERSON_PERSON_INDEX]
+                      > output_scores[PERSON_NOT_PERSON_INDEX]);
+
+    /* Stage 6: display */
+    t0 = DWT->CYCCNT;
+    draw_person_detection_overlay(is_person, output_scores[PERSON_PERSON_INDEX]);
+    reload_watchdog(NULL, NULL);
+    t1 = DWT->CYCCNT;
+    if (collect) s_pipe_stage_cycles[STAGE_DISPLAY][iter] = t1 - t0;
+
+    if (out_is_person) *out_is_person = is_person ? 1 : 0;
+    return 0;
+}
+
+/**
+ * Pipeline benchmark: warmup + measured loop + binary BLE TX.
+ *
+ *   - PIPE_WARMUP untimed full-pipeline iterations to warm caches /
+ *     branch predictor / camera state.
+ *   - PIPE_N measured iterations, recording per-iteration DWT cycle
+ *     counts for each of PIPE_STAGES stages.
+ *   - After the measured loop, stream s_pipe_stage_cycles back over BLE
+ *     using the same chunked protocol as run_inference_benchmark: one
+ *     "cycle" per stage, with cycle_idx = stage id (0..6) and
+ *     cycles[] = PIPE_N per-iteration cycle counts.
+ *
+ * Lua: frame.experiment.run_person_detection_benchmark()  (no args)
+ * Returns: PIPE_N (purely informational; host doesn't read it).
+ */
+static int lua_experiment_run_person_detection_benchmark(lua_State *L)
+{
     /* Check if person detect model is initialized */
     if (!person_detect_is_initialized()) {
         luaL_error(L, "Person detect RGB model not initialized");
         return 0;
     }
+    if (!bluetooth_is_connected()) {
+        luaL_error(L, "Bluetooth not connected");
+        return 0;
+    }
 
-    /* Static buffers (see file-scope). jpeg_buffer aliases s_rgb_buffer;
-     * temp_buffer is separate. No heap allocation per iteration. */
-    uint8_t *temp_buffer = s_temp_buffer;
-    uint8_t *rgb_buffer  = s_rgb_buffer;
+    LOG("pipe-bench: start (warmup=%u, N=%u, stages=%u, payload=%u B)",
+        (unsigned)PIPE_WARMUP, (unsigned)PIPE_N, (unsigned)PIPE_STAGES,
+        (unsigned)sizeof(s_pipe_payload));
 
 #ifndef DEV_KIT_BUILD
-    const size_t MAX_JPEG_SIZE = RGB_OUTPUT_BYTES;
-    const size_t READ_CHUNK_SIZE = 512;
-    size_t jpeg_size = 0;
-
-    uint8_t *jpeg_buffer = s_rgb_buffer;
-
-    /* ===== Initialize camera ONCE before benchmark loop ===== */
+    /* ===== Initialize camera ONCE before warmup loop =====
+     * Auto-exposure runs only once - subsequent warmup/measured frames
+     * see the same exposure settings (the user explicitly chose this
+     * order; warmup #1 may still have some exposure transient). */
     lua_getglobal(L, "frame");
     lua_getfield(L, -1, "camera");
     lua_getfield(L, -1, "power_save");
@@ -456,255 +684,127 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         nrfx_systick_delay_ms(100);
         reload_watchdog(NULL, NULL);
     }
-    LOG("Benchmark RGB: camera initialized");
+    LOG("pipe-bench: camera initialized (auto-exposure x5)");
 #endif
 
-    int person_count = 0;
-
-    /* Enable DWT cycle counter for precise timing */
+    /* Enable DWT cycle counter (same sequence as the pure-inference
+     * benchmark below). Cycle wraparound is safe here: at 64 MHz one
+     * stage would need >67 s of contiguous cycles to wrap, and no stage
+     * approaches that. */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
 
-    /* Timing accumulators for detailed breakdown */
-    uint32_t time_memset = 0;
-    uint32_t time_capture = 0;
-    uint32_t time_wait_ready = 0;
-    uint32_t time_read_jpeg = 0;
-    uint32_t time_decode = 0;
-    uint32_t time_upscale = 0;
-    uint32_t time_inference = 0;
-    uint32_t time_display = 0;
-    uint32_t t0, t1;
-
-    uint32_t start_cycles = DWT->CYCCNT;
-
-    /* ===== Main benchmark loop ===== */
-    for (int iter = 0; iter < iterations; iter++) {
+    /* ===== Warmup: PIPE_WARMUP full-pipeline iterations, untimed ===== */
+    for (int i = 0; i < PIPE_WARMUP; i++) {
         reload_watchdog(NULL, NULL);
-
-        /* Time: memset */
-        t0 = DWT->CYCCNT;
-        memset(temp_buffer, 0, RGB_CAPTURE_BYTES);
-        memset(rgb_buffer, 0, RGB_OUTPUT_BYTES);
-        t1 = DWT->CYCCNT;
-        time_memset += (t1 - t0);
-
-#ifdef DEV_KIT_BUILD
-        /* Time: decode (DEV_KIT only - no capture/read) */
-        t0 = DWT->CYCCNT;
-        /* DEV_KIT: Use hardcoded test JPEG data (same image each iteration) */
-        result = jpeg_decode_rgb_scaled(test_jpeg_data, test_jpeg_size,
-                                        temp_buffer, SCALED_SIZE, SCALED_SIZE,
-                                        &actual_width, &actual_height,
-                                        3, false);  /* scale=3 (1/8), no rotation */
-        if (result != 0) {
-            luaL_error(L, "RGB decode failed: %d", result);
-            return 0;
-        }
-        t1 = DWT->CYCCNT;
-        time_decode += (t1 - t0);
-#else
-        /* Capture new image each iteration */
-        memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
-
-        /* Time: capture */
-        t0 = DWT->CYCCNT;
-        /* Capture image */
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "capture");
-        if (!lua_isfunction(L, -1)) {
-            lua_pop(L, 3);
-            luaL_error(L, "camera.capture not found");
-            return 0;
-        }
-        lua_newtable(L);
-        lua_pushinteger(L, CAPTURE_SIZE);
-        lua_setfield(L, -2, "resolution");
-        lua_pushstring(L, "MEDIUM");
-        lua_setfield(L, -2, "quality");
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            luaL_error(L, "capture failed");
-            return 0;
-        }
-        lua_pop(L, 2);
-        t1 = DWT->CYCCNT;
-        time_capture += (t1 - t0);
-
-        /* Time: wait for image ready */
-        t0 = DWT->CYCCNT;
-        /* Wait for image ready */
-        uint32_t timeout = 1000000;
-        bool ready = false;
-        while (timeout-- && !ready) {
-            lua_getglobal(L, "frame");
-            lua_getfield(L, -1, "camera");
-            lua_getfield(L, -1, "image_ready");
-            if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-                lua_pop(L, 3);
-                luaL_error(L, "image_ready failed");
-                return 0;
-            }
-            ready = lua_toboolean(L, -1);
-            lua_pop(L, 3);
-            if (!ready) {
-                nrfx_systick_delay_us(10);
-            }
-            reload_watchdog(NULL, NULL);
-        }
-
-        if (!ready) {
-            luaL_error(L, "capture timeout");
-            return 0;
-        }
-        t1 = DWT->CYCCNT;
-        time_wait_ready += (t1 - t0);
-
-        /* Time: read JPEG data */
-        t0 = DWT->CYCCNT;
-        /* Read JPEG data */
-        jpeg_size = 0;
-        while (jpeg_size < MAX_JPEG_SIZE) {
-            lua_getglobal(L, "frame");
-            lua_getfield(L, -1, "camera");
-            lua_getfield(L, -1, "read");
-            lua_pushinteger(L, READ_CHUNK_SIZE);
-            if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-                lua_pop(L, 3);
-                luaL_error(L, "read failed");
-                return 0;
-            }
-
-            if (lua_isnil(L, -1)) {
-                lua_pop(L, 3);
-                break;
-            }
-
-            size_t chunk_len;
-            const char *chunk = lua_tolstring(L, -1, &chunk_len);
-            memcpy(jpeg_buffer + jpeg_size, chunk, chunk_len);
-            jpeg_size += chunk_len;
-            lua_pop(L, 3);
-            reload_watchdog(NULL, NULL);
-        }
-        t1 = DWT->CYCCNT;
-        time_read_jpeg += (t1 - t0);
-
-        /* Time: decode JPEG */
-        t0 = DWT->CYCCNT;
-        /* Decode JPEG to 90x90 RGB */
-        reload_watchdog(NULL, NULL);
-        result = jpeg_decode_rgb_scaled(jpeg_buffer, jpeg_size,
-                                        temp_buffer, SCALED_SIZE, SCALED_SIZE,
-                                        &actual_width, &actual_height,
-                                        3, false);  /* scale=3 (1/8), no rotation */
-        if (result != 0) {
-            luaL_error(L, "RGB decode failed: %d", result);
-            return 0;
-        }
-        t1 = DWT->CYCCNT;
-        time_decode += (t1 - t0);
-#endif
-
-        /* Time: upscale */
-        t0 = DWT->CYCCNT;
-        /* Upscale 90x90 RGB to 96x96 RGB with 90 CCW rotation */
-        reload_watchdog(NULL, NULL);
-        upscale_90_to_96_rgb_with_rotation(temp_buffer, rgb_buffer);
-        t1 = DWT->CYCCNT;
-        time_upscale += (t1 - t0);
-
-        /* Time: inference */
-        t0 = DWT->CYCCNT;
-        /* Run person detection inference */
-        reload_watchdog(NULL, NULL);
-        int8_t output_scores[PERSON_OUTPUT_SIZE];
-
-        tflm_status_t infer_status = person_detect_infer(rgb_buffer, output_scores);
-        if (infer_status != TFLM_OK) {
-            luaL_error(L, "Person detect RGB inference failed");
-            return 0;
-        }
-
-        int8_t person_score = output_scores[PERSON_PERSON_INDEX];
-        int8_t not_person_score = output_scores[PERSON_NOT_PERSON_INDEX];
-        bool is_person = (person_score > not_person_score);
-
-        if (is_person) {
-            person_count++;
-        }
-        t1 = DWT->CYCCNT;
-        time_inference += (t1 - t0);
-
-        /* Time: display */
-        t0 = DWT->CYCCNT;
-        /* Update display every iteration */
-        draw_person_detection_overlay(is_person, person_score);
-        reload_watchdog(NULL, NULL);
-        t1 = DWT->CYCCNT;
-        time_display += (t1 - t0);
-
-        /* Log progress every 10 iterations */
-        if ((iter + 1) % 10 == 0) {
-            LOG("Benchmark RGB: %d/%d iterations", iter + 1, (int)iterations);
+        if (pipe_run_iteration(L, i, /*collect=*/false, NULL) != 0) {
+            return 0;  /* luaL_error already raised */
         }
     }
+    LOG("pipe-bench: warmup done");
 
-    uint32_t end_cycles = DWT->CYCCNT;
+    /* ===== Measured: PIPE_N iterations, fill s_pipe_stage_cycles ===== */
+    int person_count = 0;
+    for (int iter = 0; iter < PIPE_N; iter++) {
+        reload_watchdog(NULL, NULL);
+        int is_person = 0;
+        if (pipe_run_iteration(L, iter, /*collect=*/true, &is_person) != 0) {
+            return 0;
+        }
+        if (is_person) person_count++;
+        if ((iter + 1) % 10 == 0) {
+            LOG("pipe-bench: %d/%d iters", iter + 1, (int)PIPE_N);
+        }
+    }
+    LOG("pipe-bench: measured loop done, person_count=%d", person_count);
 
-    /* Calculate timing - CPU runs at 64MHz */
-    uint32_t elapsed_cycles = end_cycles - start_cycles;
-    uint32_t total_ms = elapsed_cycles / 64000;  /* 64MHz = 64000 cycles/ms */
-    uint32_t avg_ms = total_ms / (uint32_t)iterations;
+#ifndef DEV_KIT_BUILD
+    /* Camera off after measurement: leaves the device in the same idle
+     * state as the pure-inference benchmark for clean teardown. */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "power_save");
+    if (lua_isfunction(L, -1)) {
+        lua_pushboolean(L, 1);  /* power_save(true) */
+        (void)lua_pcall(L, 1, 0, 0);
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 2);
+#endif
 
-    /* Static buffers - no free needed. */
+    /* ===== BLE TX: one cycle per stage =====
+     * Same chunked protocol as run_inference_benchmark below: 250 ms
+     * settle, sacrificial wake ping, payload in 100-byte chunks at
+     * 100 ms each, 0xFE 0xFE separator between stages, end marker
+     * 0xFF 0xFF 0x00 0x00. The host (vww_detection_benchmark.py) maps
+     * the cycle_idx in each payload back to a stage name. */
+    const size_t   CHUNK_SIZE     = 100;
+    const uint32_t SETTLE_MS      = 250;
+    const uint32_t CHUNK_DELAY_MS = 100;
+    uint8_t chunk_buffer[CHUNK_SIZE + 1];
+    chunk_buffer[0] = 0x01;  /* data flag */
 
-    /* Convert timing to milliseconds */
-    uint32_t memset_ms = time_memset / 64000;
-    uint32_t capture_ms = time_capture / 64000;
-    uint32_t wait_ready_ms = time_wait_ready / 64000;
-    uint32_t read_jpeg_ms = time_read_jpeg / 64000;
-    uint32_t decode_ms = time_decode / 64000;
-    uint32_t upscale_ms = time_upscale / 64000;
-    uint32_t inference_ms = time_inference / 64000;
-    uint32_t display_ms = time_display / 64000;
+    for (uint32_t s = 0; s < PIPE_STAGES; s++) {
+        s_pipe_payload.stage_idx = s;
+        memcpy(s_pipe_payload.cycles, s_pipe_stage_cycles[s],
+               sizeof(s_pipe_payload.cycles));
+        reload_watchdog(NULL, NULL);
 
-    LOG("Benchmark RGB complete: %d iterations, %d detections, %lu ms total, %lu ms avg",
-        (int)iterations, person_count, total_ms, avg_ms);
-    LOG("Timing breakdown (ms): memset=%lu capture=%lu wait=%lu read=%lu decode=%lu upscale=%lu infer=%lu display=%lu",
-        memset_ms, capture_ms, wait_ready_ms, read_jpeg_ms, decode_ms, upscale_ms, inference_ms, display_ms);
+        nrfx_systick_delay_ms(SETTLE_MS);
+        reload_watchdog(NULL, NULL);
 
-    /* Return results table */
-    lua_newtable(L);
-    lua_pushinteger(L, iterations);
-    lua_setfield(L, -2, "iterations");
-    lua_pushinteger(L, person_count);
-    lua_setfield(L, -2, "person_detections");
-    lua_pushinteger(L, total_ms);
-    lua_setfield(L, -2, "total_time_ms");
-    lua_pushinteger(L, avg_ms);
-    lua_setfield(L, -2, "avg_time_ms");
+        /* Sacrificial wake-ping (see experiment_vww.c rationale). */
+        const uint8_t wake[5] = {0x01, 0xAA, 0xAA, 0xAA, 0xAA};
+        (void)bench_send_with_retry(wake, 5);
+        nrfx_systick_delay_ms(CHUNK_DELAY_MS);
+        reload_watchdog(NULL, NULL);
 
-    /* Detailed timing breakdown */
-    lua_pushinteger(L, memset_ms);
-    lua_setfield(L, -2, "memset_ms");
-    lua_pushinteger(L, capture_ms);
-    lua_setfield(L, -2, "capture_ms");
-    lua_pushinteger(L, wait_ready_ms);
-    lua_setfield(L, -2, "wait_ready_ms");
-    lua_pushinteger(L, read_jpeg_ms);
-    lua_setfield(L, -2, "read_jpeg_ms");
-    lua_pushinteger(L, decode_ms);
-    lua_setfield(L, -2, "decode_ms");
-    lua_pushinteger(L, upscale_ms);
-    lua_setfield(L, -2, "upscale_ms");
-    lua_pushinteger(L, inference_ms);
-    lua_setfield(L, -2, "inference_ms");
-    lua_pushinteger(L, display_ms);
-    lua_setfield(L, -2, "display_ms");
+        const uint8_t *payload = (const uint8_t *)&s_pipe_payload;
+        size_t total = sizeof(s_pipe_payload);
+        size_t offset = 0;
+        unsigned chunk_idx = 0;
+        while (offset < total) {
+            size_t chunk = (total - offset > CHUNK_SIZE)
+                              ? CHUNK_SIZE
+                              : (total - offset);
+            chunk_buffer[0] = 0x01;
+            memcpy(chunk_buffer + 1, payload + offset, chunk);
+            if (!bench_send_with_retry(chunk_buffer, chunk + 1)) {
+                luaL_error(L, "BLE send failed at stage %u chunk %u",
+                           (unsigned)s, chunk_idx);
+                return 0;
+            }
+            offset += chunk;
+            chunk_idx++;
+            nrfx_systick_delay_ms(CHUNK_DELAY_MS);
+            reload_watchdog(NULL, NULL);
+        }
 
+        /* Stage separator (host-side: 2-byte packet 0xFE 0xFE). */
+        nrfx_systick_delay_ms(CHUNK_DELAY_MS);
+        const uint8_t separator[3] = {0x01, 0xFE, 0xFE};
+        if (!bench_send_with_retry(separator, 3)) {
+            luaL_error(L, "BLE separator failed at stage %u", (unsigned)s);
+            return 0;
+        }
+        LOG("pipe-bench: stage %u/%u sent",
+            (unsigned)(s + 1), (unsigned)PIPE_STAGES);
+    }
+
+    /* End marker (host-side: 4-byte packet 0xFF 0xFF 0x00 0x00). */
+    nrfx_systick_delay_ms(SETTLE_MS);
+    const uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+    if (!bench_send_with_retry(end_marker, 5)) {
+        luaL_error(L, "BLE end marker failed");
+        return 0;
+    }
+    LOG("pipe-bench: end marker sent");
+
+    /* Match pure-inference benchmark return convention. Host doesn't
+     * read this; useful only for Lua-level smoke testing. */
+    lua_pushinteger(L, (lua_Integer)PIPE_N);
     return 1;
 }
 
