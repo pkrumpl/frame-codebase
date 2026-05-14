@@ -112,6 +112,8 @@ The nRF52 is designed to handle the overall system operation. It runs Lua, manag
 
 ### Deployment Options
 
+> For a step-by-step walkthrough of the OTA update process and running the on-device ML showcase, see [`docs/working-with-the-glasses.md`](docs/working-with-the-glasses.md).
+
 **Over-the-Air (OTA) Update via Bluetooth:**
 - Build a DFU package with `make release`
 - Use the Frame app or nRF Connect to upload the firmware
