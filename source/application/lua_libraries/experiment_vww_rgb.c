@@ -11,6 +11,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
 #include "experiment_common.h"
@@ -106,54 +107,74 @@ static struct {
     uint32_t cycles[PIPE_N];
 } s_pipe_payload;
 
+/* Forward decl: bench_send_with_retry is defined alongside the inference
+ * benchmark near the bottom of the file. Both the streaming path and the
+ * benchmarks use it so partial BLE notifications don't get silently dropped
+ * when the SoftDevice's send queue is saturated. */
+static bool bench_send_with_retry(const uint8_t *data, size_t length);
+
 /*-----------------------------------------------*/
 /* Person Detection Overlay                      */
 /*-----------------------------------------------*/
 
 /**
- * Draw simple text overlay for person detection result.
- * Displays colored indicator for PERSON (green) or NO PERSON (red)
+ * Draw the person-detection result as a colored text string near the bottom
+ * of the Frame display.
+ *
+ * Confidence is a simple linear margin: 50% when the two scores tie, 100%
+ * when the predicted class fully dominates the other. No exp()/softmax in
+ * firmware. The text is drawn via frame.display.text (system-font glyphs)
+ * so it picks up the same rendering path the calibration screen uses; the
+ * FPGA back-buffer is cleared automatically on the show() that follows
+ * (see display_buffers.sv).
  */
-static void draw_person_detection_overlay(bool is_person, int8_t person_score)
+static void draw_person_detection_overlay(lua_State *L,
+                                          bool is_person,
+                                          int8_t person_score,
+                                          int8_t not_person_score)
 {
-    (void)person_score;  /* Suppress unused parameter warning */
+    int margin = (int)person_score - (int)not_person_score;
+    if (margin < 0) margin = -margin;
+    if (margin > 255) margin = 255;
+    int conf = 50 + (margin * 50) / 255;
+    if (conf < 50) conf = 50;
+    if (conf > 100) conf = 100;
 
-    const uint16_t DISPLAY_W = 640;
-    const uint16_t DISPLAY_H = 400;
+    char buf[32];
+    snprintf(buf, sizeof(buf),
+             is_person ? "PERSON  %d%%" : "NO PERSON  %d%%",
+             conf);
 
-    /* Color indices */
-    const uint8_t PERSON_COLOR = 10;     /* GREEN for person */
-    const uint8_t NO_PERSON_COLOR = 3;   /* RED for no person */
+    /* Fixed anchor near the bottom of the 640x400 display. The system-font
+     * glyphs are 48 px tall, so y_position + 48 must stay <= 400 — otherwise
+     * frame.display.text silently drops the glyph (display.c:335). Adjust
+     * text_x here if the demo looks off-center. */
+    const lua_Integer text_x = 220;
+    const lua_Integer text_y = 345;
+    const char *color_name = is_person ? "GREEN" : "RED";
 
-    /* Rectangle indicator: 100x60 filled block */
-    static const uint8_t block_sprite[750] = {  /* 100x60 = 6000 bits = 750 bytes, all 0xFF */
-        [0 ... 749] = 0xFF
-    };
-
-    /* Position: center of display */
-    int16_t px = (DISPLAY_W - 100) / 2;
-    int16_t py = (DISPLAY_H - 60) / 2;
-
-    uint8_t color = is_person ? PERSON_COLOR : NO_PERSON_COLOR;
-
-    /* Draw indicator block */
-    uint8_t meta[8] = {
-        (uint8_t)(px >> 8), (uint8_t)(px & 0xFF),
-        (uint8_t)(py >> 8), (uint8_t)(py & 0xFF),
-        0, 100,  /* width = 100 */
-        2,       /* 2 colors (1-bit) */
-        color
-    };
-
-    uint8_t *payload = malloc(8 + 750);
-    if (payload) {
-        memcpy(payload, meta, 8);
-        memcpy(payload + 8, block_sprite, 750);
-        spi_write(FPGA, 0x12, payload, 8 + 750);
-        free(payload);
+    /* frame.display.text(buf, text_x, text_y, {color = color_name}) */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "display");
+    lua_getfield(L, -1, "text");
+    if (!lua_isfunction(L, -1)) {
+        lua_pop(L, 3);
+        return;
     }
+    lua_pushstring(L, buf);
+    lua_pushinteger(L, text_x);
+    lua_pushinteger(L, text_y);
+    lua_newtable(L);
+    lua_pushstring(L, color_name);
+    lua_setfield(L, -2, "color");
+    if (lua_pcall(L, 4, 0, 0) != LUA_OK) {
+        /* Error string + the two outer table-getfield results. */
+        lua_pop(L, 3);
+        return;
+    }
+    lua_pop(L, 2); /* frame, display */
 
-    /* Swap frame buffers to show */
+    /* frame.display.show() — buffer swap. */
     spi_write(FPGA, 0x14, NULL, 0);
 }
 
@@ -164,6 +185,12 @@ static void draw_person_detection_overlay(bool is_person, int8_t person_score)
 /**
  * Run person detection on camera image using RGB model.
  *
+ * If `skip_camera_init` is true, Steps 1-2 (wake + 5x autoexposure) are
+ * skipped. The host is expected to have already woken the camera and
+ * driven autoexposure (e.g. during the demo calibration phase). When
+ * false, the slow path runs both initialization steps. DEV_KIT builds
+ * ignore this flag because they don't touch the camera.
+ *
  * Image pipeline: 720x720 JPEG -> scale=3 (90x90 RGB) -> upscale to 96x96 RGB
  * Output: Display PERSON (green) or NO PERSON (red) overlay
  *
@@ -173,7 +200,7 @@ static void draw_person_detection_overlay(bool is_person, int8_t person_score)
  *   [PREDICTIONS]    2 bytes (not_person_score, person_score)
  *   [END MARKER]     0x01 0xFF 0xFF 0x00 0x00
  */
-static int lua_experiment_run_person_detection(lua_State *L)
+static int run_person_detection_body(lua_State *L, bool skip_camera_init)
 {
     /* Max JPEG size == RGB_OUTPUT_BYTES because the JPEG is read into
      * s_rgb_buffer (which is unused until upscale). 27,648 B is above
@@ -222,40 +249,42 @@ static int lua_experiment_run_person_detection(lua_State *L)
 #else /* !DEV_KIT_BUILD */
     memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
 
-    /* ===== Step 1: Wake up camera ===== */
-    lua_getglobal(L, "frame");
-    lua_getfield(L, -1, "camera");
-    lua_getfield(L, -1, "power_save");
-    if (lua_isfunction(L, -1)) {
-        lua_pushboolean(L, 0);  /* power_save(false) */
-        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            lua_pop(L, 3);
-        }
-    } else {
-        lua_pop(L, 1);
-    }
-    lua_pop(L, 2);
-    nrfx_systick_delay_ms(100);
-
-    /* ===== Step 2: Auto-adjust camera (5 iterations) ===== */
-    for (int i = 0; i < 5; i++) {
+    if (!skip_camera_init) {
+        /* ===== Step 1: Wake up camera ===== */
         lua_getglobal(L, "frame");
         lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "auto");
-        if (!lua_isfunction(L, -1)) {
-            lua_pop(L, 3);
-            luaL_error(L, "camera.auto not found");
-            return 0;
+        lua_getfield(L, -1, "power_save");
+        if (lua_isfunction(L, -1)) {
+            lua_pushboolean(L, 0);  /* power_save(false) */
+            if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+                lua_pop(L, 3);
+            }
+        } else {
+            lua_pop(L, 1);
         }
-        lua_newtable(L);
-        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-            lua_pop(L, 3);
-            luaL_error(L, "camera.auto failed");
-            return 0;
-        }
-        lua_pop(L, 3);
+        lua_pop(L, 2);
         nrfx_systick_delay_ms(100);
-        reload_watchdog(NULL, NULL);
+
+        /* ===== Step 2: Auto-adjust camera (5 iterations) ===== */
+        for (int i = 0; i < 5; i++) {
+            lua_getglobal(L, "frame");
+            lua_getfield(L, -1, "camera");
+            lua_getfield(L, -1, "auto");
+            if (!lua_isfunction(L, -1)) {
+                lua_pop(L, 3);
+                luaL_error(L, "camera.auto not found");
+                return 0;
+            }
+            lua_newtable(L);
+            if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+                lua_pop(L, 3);
+                luaL_error(L, "camera.auto failed");
+                return 0;
+            }
+            lua_pop(L, 3);
+            nrfx_systick_delay_ms(100);
+            reload_watchdog(NULL, NULL);
+        }
     }
 
     /* ===== Step 3: Capture image ===== */
@@ -372,7 +401,7 @@ static int lua_experiment_run_person_detection(lua_State *L)
         not_person_score, person_score, is_person ? "PERSON" : "NO PERSON");
 
     /* ===== Step 9: Display overlay ===== */
-    draw_person_detection_overlay(is_person, person_score);
+    draw_person_detection_overlay(L, is_person, person_score, not_person_score);
     reload_watchdog(NULL, NULL);
 
     /* ===== Step 10: Send RGB image data via Bluetooth ===== */
@@ -386,10 +415,14 @@ static int lua_experiment_run_person_detection(lua_State *L)
     }
     chunk_buffer[0] = 0x01;  /* Data flag */
 
+    /* bench_send_with_retry retries when sd_ble_gatts_hvx returns
+     * NRF_ERROR_RESOURCES (BLE TX queue full). A bare bluetooth_send_data()
+     * would silently drop the chunk. With per-frame autoexposure removed,
+     * frames stream back-to-back and the queue saturates without retry. */
     while (offset < total_bytes) {
         size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
         memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
-        bluetooth_send_data(chunk_buffer, chunk + 1);
+        (void)bench_send_with_retry(chunk_buffer, chunk + 1);
         offset += chunk;
         nrfx_systick_delay_ms(20);
         reload_watchdog(NULL, NULL);
@@ -398,18 +431,18 @@ static int lua_experiment_run_person_detection(lua_State *L)
     /* ===== Step 11: Send separator ===== */
     nrfx_systick_delay_ms(50);
     uint8_t separator[3] = {0x01, 0xFE, 0xFE};
-    bluetooth_send_data(separator, 3);
+    (void)bench_send_with_retry(separator, 3);
 
     /* ===== Step 12: Send predictions (2 bytes) ===== */
     nrfx_systick_delay_ms(50);
     chunk_buffer[0] = 0x01;
     memcpy(chunk_buffer + 1, output_scores, PERSON_OUTPUT_SIZE);
-    bluetooth_send_data(chunk_buffer, PERSON_OUTPUT_SIZE + 1);
+    (void)bench_send_with_retry(chunk_buffer, PERSON_OUTPUT_SIZE + 1);
 
     /* ===== Step 13: Send end marker ===== */
     nrfx_systick_delay_ms(100);
     uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
-    bluetooth_send_data(end_marker, 5);
+    (void)bench_send_with_retry(end_marker, 5);
 
     free(chunk_buffer);
 
@@ -417,10 +450,21 @@ static int lua_experiment_run_person_detection(lua_State *L)
     return 1;
 }
 
-/* Forward decl: bench_send_with_retry is defined further below alongside
- * the pure-inference benchmark; the pipeline benchmark TX path reuses
- * it verbatim. */
-static bool bench_send_with_retry(const uint8_t *data, size_t length);
+/* Lua entry: full slow path (wakes camera + 5x autoexposure + detect). */
+static int lua_experiment_run_person_detection(lua_State *L)
+{
+    return run_person_detection_body(L, false);
+}
+
+/* Lua entry: fast path that skips wake + autoexposure. The host must have
+ * already powered the camera on and driven autoexposure (typically via the
+ * demo calibration phase). Used for steady-state streaming. */
+static int lua_experiment_run_person_detection_fast(lua_State *L)
+{
+    return run_person_detection_body(L, true);
+}
+
+/* bench_send_with_retry forward-declared near the top of the file. */
 
 /**
  * Run one full pipeline iteration: capture -> wait_ready -> read_jpeg ->
@@ -605,7 +649,10 @@ static int pipe_run_iteration(lua_State *L, int iter, bool collect,
 
     /* Stage 6: display */
     t0 = DWT->CYCCNT;
-    draw_person_detection_overlay(is_person, output_scores[PERSON_PERSON_INDEX]);
+    draw_person_detection_overlay(L,
+                                  is_person,
+                                  output_scores[PERSON_PERSON_INDEX],
+                                  output_scores[PERSON_NOT_PERSON_INDEX]);
     reload_watchdog(NULL, NULL);
     t1 = DWT->CYCCNT;
     if (collect) s_pipe_stage_cycles[STAGE_DISPLAY][iter] = t1 - t0;
@@ -1003,6 +1050,9 @@ void experiment_register_lua_functions(lua_State *L, int experiment_table)
 
     lua_pushcfunction(L, lua_experiment_run_person_detection);
     lua_setfield(L, -2, "run_person_detection");
+
+    lua_pushcfunction(L, lua_experiment_run_person_detection_fast);
+    lua_setfield(L, -2, "run_person_detection_fast");
 
     lua_pushcfunction(L, lua_experiment_run_person_detection_benchmark);
     lua_setfield(L, -2, "run_person_detection_benchmark");

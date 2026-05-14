@@ -73,6 +73,50 @@ def print_handler(s: str):
     print(f"[Frame]: {s}")
 
 
+# ELSS logo is embedded as private-use codepoint U+F0011 in system_font.h
+# (added via `frameutils create_sprites`). Its UTF-8 byte sequence is
+# F3 B0 80 91. We send the bytes as Lua \xHH escapes so the Lua snippet
+# stays ASCII over BLE.
+ELSS_LOGO_LUA_LITERAL = r"'\xF3\xB0\x80\x91'"
+
+
+async def run_calibration(b: Bluetooth) -> None:
+    """Draw the ELSS logo + 'Calibrating...' on the Frame display, then run
+    5 autoexposure cycles from Python.
+
+    Mirrors what a future on-device tap handler will do — same display
+    primitives, same autoexposure cadence — just driven over BLE instead
+    of from an IMU callback.
+    """
+    DISPLAY_W = 640
+
+    # Logo glyph (U+F0011) is 437x144 in the system font. Center horizontally;
+    # the +1 is because frame.display uses 1-based coordinates.
+    logo_x = 1 + (DISPLAY_W - 437) // 2  # = 102
+    logo_y = 130                          # leaves room for caption below
+
+    caption_x = 240                       # tuned to roughly center the caption
+    caption_y = 290
+
+    lua = (
+        f"frame.display.text({ELSS_LOGO_LUA_LITERAL}, "
+        f"{logo_x}, {logo_y}, {{color='WHITE'}});"
+        f"frame.display.text('Calibrating...', "
+        f"{caption_x}, {caption_y}, {{color='WHITE'}});"
+        f"frame.display.show()"
+    )
+    await b.send_lua(lua)
+
+    await b.send_lua("frame.camera.power_save(false)")
+    await asyncio.sleep(0.2)
+
+    print("Running autoexposure (5 iterations)...")
+    for i in range(5):
+        await b.send_lua("frame.camera.auto({})")
+        await asyncio.sleep(1)
+        print(f"  Autoexposure {i + 1}/5")
+
+
 async def main():
     global running
 
@@ -85,6 +129,10 @@ async def main():
         print_response_handler=print_handler,
         data_response_handler=data_handler
     )
+
+    print("Calibrating camera...")
+    await run_calibration(b)
+    print("Camera ready.")
 
     print("Starting RGB person detection stream (Ctrl+C to stop)...")
     print(f"Expecting {EXPECTED_IMAGE_BYTES} bytes RGB image data per frame")
@@ -110,15 +158,22 @@ async def main():
     while running:
         reset_buffers()
 
-        # Call person detection
-        await b.send_lua("frame.experiment.run_person_detection()")
+        # Call person detection (camera already woken + auto-exposed in run_calibration)
+        await b.send_lua("frame.experiment.run_person_detection_fast()")
 
-        # Wait for transfer to complete (longer timeout for larger data)
+        # Wait for transfer to complete (longer timeout for larger data).
+        # Pump matplotlib events each tick so the figure stays responsive
+        # during the BLE transfer (~3 s/frame). Without this, the window
+        # freezes between frames and clicks/closes feel laggy.
         timeout = 45  # seconds (increased for RGB - 3x more data)
         elapsed = 0
         while not transfer_complete and elapsed < timeout and running:
             await asyncio.sleep(0.05)
             elapsed += 0.05
+            try:
+                fig.canvas.flush_events()
+            except Exception:
+                pass
 
         if not running:
             break
@@ -166,6 +221,17 @@ async def main():
     # Cleanup
     print("\nCleaning up...")
     await b.send_lua("frame.camera.power_save(true)")
+    # Restore the standard 'Frame is Paired' screen. The firmware draws this
+    # once at boot via show_pairing_screen() but never re-draws it on its own,
+    # so without this step the last detection text stays on the glasses after
+    # the script exits. The Lua snippet here mirrors luaport.c:show_pairing_screen.
+    await b.send_lua(
+        "frame.display.text('Frame is Paired', 185, 140);"
+        "frame.display.text("
+        "'Frame '..frame.bluetooth.address():sub(-2, -1), "
+        "245, 210, { color = 'ORANGE' });"
+        "frame.display.show()"
+    )
     await asyncio.sleep(0.1)
     await b.disconnect()
 
