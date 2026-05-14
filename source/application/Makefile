@@ -40,6 +40,16 @@ ifeq ($(filter $(ML_EXPERIMENT),VWW VWW_RGB FOMO_BEER_CAN HELLO_WORLD),)
 $(error Invalid ML_EXPERIMENT value '$(ML_EXPERIMENT)'. Valid values: VWW, VWW_RGB, FOMO_BEER_CAN, HELLO_WORLD)
 endif
 
+USE_CMSIS_NN ?= 1
+$(info USE_CMSIS_NN is $(USE_CMSIS_NN))
+
+ifeq ($(filter $(USE_CMSIS_NN),0 1),)
+$(error Invalid USE_CMSIS_NN value '$(USE_CMSIS_NN)'. Valid values: 0, 1)
+endif
+
+WATCHDOG_TIMEOUT_MS ?= 6000
+$(info WATCHDOG_TIMEOUT_MS is $(WATCHDOG_TIMEOUT_MS))
+
 LIBRARIES := ../../libraries
 BUILD := ../../build
 
@@ -248,26 +258,29 @@ CPP_FILES += \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/micro_allocation_info.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/conv_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/depthwise_conv_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pooling_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reshape.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reshape_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/softmax.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/softmax_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/reduce_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/fully_connected_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/add.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/add_common.cc \
-	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn/pad.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/pad_common.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations.cc \
 	$(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/activations_common.cc
+
+# TFLM kernels with both CMSIS-NN and reference implementations. They
+# share Register_*() symbols, so exactly one variant is compiled per
+# build. Unique object names + explicit rules below bypass VPATH (which
+# would otherwise always pick the reference variant when both exist).
+ifeq ($(USE_CMSIS_NN),1)
+TFLM_KERNEL_SRC_DIR := $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels/cmsis_nn
+else
+TFLM_KERNEL_SRC_DIR := $(LIBRARIES)/tflm/tensorflow/lite/micro/kernels
+endif
 
 # Add HELLO_WORLD model data files
 ifeq ($(ML_EXPERIMENT),HELLO_WORLD)
@@ -333,6 +346,7 @@ COMMON_FLAGS += \
 	-DLFS_NO_WARN \
 	-DNDEBUG \
 	-DNRF52840_XXAA \
+	-DWATCHDOG_TIMEOUT_MS=$(WATCHDOG_TIMEOUT_MS) \
 
 # Check if build is for development kit and include flag if necessary
 ifdef DEV_KIT
@@ -346,10 +360,16 @@ COMMON_FLAGS += -DML_EXPERIMENT_$(ML_EXPERIMENT)
 #* Note: Disable microphone functionality to save RAM
 COMMON_FLAGS += -DFRAME_DISABLE_MICROPHONE
 
+ifeq ($(USE_CMSIS_NN),1)
+CMSIS_NN_FLAG := -DCMSIS_NN
+else
+CMSIS_NN_FLAG :=
+endif
+
 # C-specific flags (includes local picolibc)
 CFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) $(C_ONLY_INCLUDE_FLAGS) \
 	-std=gnu17 \
-	-DCMSIS_NN \
+	$(CMSIS_NN_FLAG) \
 	-DARM_MATH_DSP \
 	-DARM_MATH_LOOPUNROLL
 
@@ -362,7 +382,7 @@ CXXFLAGS := $(COMMON_FLAGS) $(COMMON_INCLUDE_FLAGS) \
 	-fno-use-cxa-atexit \
 	-DTF_LITE_STATIC_MEMORY \
 	-DTF_LITE_DISABLE_X86_NEON \
-	-DCMSIS_NN \
+	$(CMSIS_NN_FLAG) \
 	-DARM_MATH_DSP \
 	-DARM_MATH_LOOPUNROLL \
 	-D_READ_WRITE_RETURN_TYPE=_ssize_t \
@@ -411,7 +431,17 @@ EXPLICIT_OBJECTS := $(BUILD)/obj/common_core.o $(BUILD)/obj/common_kernels.o \
                     $(BUILD)/obj/kernel_util_kernels.o $(BUILD)/obj/kernel_util_micro.o \
                     $(BUILD)/obj/bluetooth_app.o $(BUILD)/obj/bluetooth_lua.o \
                     $(BUILD)/obj/compression_app.o $(BUILD)/obj/compression_lua.o
-ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS) $(EXPLICIT_OBJECTS)
+
+TFLM_KERNEL_OBJECTS := \
+    $(BUILD)/obj/tflm_kernel_conv.o \
+    $(BUILD)/obj/tflm_kernel_depthwise_conv.o \
+    $(BUILD)/obj/tflm_kernel_pooling.o \
+    $(BUILD)/obj/tflm_kernel_softmax.o \
+    $(BUILD)/obj/tflm_kernel_fully_connected.o \
+    $(BUILD)/obj/tflm_kernel_add.o \
+    $(BUILD)/obj/tflm_kernel_pad.o
+
+ALL_OBJECTS := $(C_OBJECTS) $(CPP_OBJECTS) $(EXPLICIT_OBJECTS) $(TFLM_KERNEL_OBJECTS)
 
 # VPATH tells Make where to find source files
 VPATH := . .. lua_libraries \
@@ -494,6 +524,41 @@ $(BUILD)/obj/compression_lua.o: lua_libraries/compression.c
 	@arm-none-eabi-gcc $(CFLAGS) -c $< -o $@
 
 $(BUILD)/obj/error_reporter.o: $(LIBRARIES)/tflm/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_conv.o: $(TFLM_KERNEL_SRC_DIR)/conv.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_depthwise_conv.o: $(TFLM_KERNEL_SRC_DIR)/depthwise_conv.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_pooling.o: $(TFLM_KERNEL_SRC_DIR)/pooling.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_softmax.o: $(TFLM_KERNEL_SRC_DIR)/softmax.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_fully_connected.o: $(TFLM_KERNEL_SRC_DIR)/fully_connected.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_add.o: $(TFLM_KERNEL_SRC_DIR)/add.cc
+	@mkdir -p $(dir $@)
+	@echo "  CXX   $<"
+	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/obj/tflm_kernel_pad.o: $(TFLM_KERNEL_SRC_DIR)/pad.cc
 	@mkdir -p $(dir $@)
 	@echo "  CXX   $<"
 	@arm-none-eabi-g++ $(CXXFLAGS) -c $< -o $@

@@ -15,7 +15,7 @@
 #include <stdint.h>
 
 // Maximum number of consecutive resets before entering emergency DFU mode (should not be more than 10!)
-#define MAX_BOOT_ATTEMPTS 5
+#define MAX_BOOT_ATTEMPTS 8
 
 /*
  * Enter emergency DFU mode by setting the DFU flag and resetting the device via soft reset.
@@ -35,5 +35,12 @@ void enter_dfu_mode(void);
  * Returns: 0 on success, error code on failure
  */
 int boot_safety_init(void);
+
+/*
+ * Mark the current boot as successful.
+ *
+ * This function resets the boot counter to 0, indicating a successful boot.
+ */
+void boot_safety_mark_boot_successful(void);
 
 #endif // BOOT_SAFETY_H

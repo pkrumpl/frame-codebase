@@ -22,7 +22,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-__min_heap_size = 64K;
+__min_heap_size = 48K;
 __stack_size = 16K;
 
 SECTIONS

@@ -25,6 +25,7 @@
 #include <string.h>
 #include <math.h>
 #include "bluetooth.h"
+#include "boot_safety.h"
 #include "error_logging.h"
 #include "frame_lua_libraries.h"
 #include "lauxlib.h"
@@ -188,9 +189,48 @@ void run_lua(bool is_paired)
         lua_pop(L, -1);
     }
 
+    /* If this build registered frame.experiment.run_vww_demo (VWW_RGB
+     * builds do; others don't), install a double-tap handler that
+     * triggers it. Two taps within 500 ms count as a double-tap. The
+     * snippet is harmless in builds that don't define run_vww_demo
+     * because the outer `if` evaluates to false.
+     *
+     * Two gates protect against unwanted firing:
+     *   1. demo_running flag — ignore taps that arrive while a demo is
+     *      already in flight (re-entrance during the long-running
+     *      run_vww_demo call). pcall keeps the flag from getting stuck
+     *      if the demo body raises an error.
+     *   2. frame.bluetooth.is_connected() — if a host is connected (e.g.
+     *      vww_rgb_detection_stream.py is driving the BLE demo), don't
+     *      hijack the camera/display with the on-device flow. */
+    (void)luaL_dostring(L,
+        "if frame.experiment and frame.experiment.run_vww_demo then\n"
+        "  local last_tap = 0\n"
+        "  local demo_running = false\n"
+        "  frame.imu.tap_callback(function()\n"
+        "    if demo_running then return end\n"
+        "    if frame.bluetooth.is_connected() then\n"
+        "      last_tap = 0\n"
+        "      return\n"
+        "    end\n"
+        "    local now = frame.time.utc()\n"
+        "    if (now - last_tap) < 0.5 then\n"
+        "      last_tap = 0\n"
+        "      demo_running = true\n"
+        "      pcall(frame.experiment.run_vww_demo)\n"
+        "      demo_running = false\n"
+        "    else\n"
+        "      last_tap = now\n"
+        "    end\n"
+        "  end)\n"
+        "end");
+
     // Show splash screen
     status = show_pairing_screen(is_paired, false);
 
+    // Before running REPL, mark boot as successful to reset boot safety counter
+    // TODO: enable again to avoid entering DFU mode after 5 reboots
+    // boot_safety_mark_boot_successful();
 
     //  Run REPL
     while (true)

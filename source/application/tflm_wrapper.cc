@@ -409,7 +409,7 @@ tflite::MicroInterpreter* interpreter = nullptr;
 HelloWorldOpResolver* op_resolver = nullptr;
 
 // Int8 model storage
-constexpr int kTensorArenaSizeInt8 = 2500;
+constexpr int kTensorArenaSizeInt8 = 2000;
 uint8_t tensor_arena_int8[kTensorArenaSizeInt8] __attribute__((aligned(16)));
 tflite::MicroInterpreter* interpreter_int8 = nullptr;
 HelloWorldOpResolver* op_resolver_int8 = nullptr;
@@ -462,6 +462,10 @@ tflm_status_t tflm_initialize(void) {
     MicroPrintf("AllocateTensors failed for float model");
     return TFLM_ERROR;
   }
+
+  size_t arena_used = interpreter->arena_used_bytes();
+  MicroPrintf("Hello world float arena used: %u bytes (of %u available)",
+              arena_used, kTensorArenaSize);
 
   MicroPrintf("Float model initialized successfully!");
   return TFLM_OK;
@@ -530,6 +534,10 @@ tflm_status_t tflm_initialize_int8(void) {
   int8_quant_params.output_scale = output_tensor->params.scale;
   int8_quant_params.output_zero_point = output_tensor->params.zero_point;
   int8_quant_params.input_scale_inv = 1.0f / int8_quant_params.input_scale;
+
+  size_t arena_used = interpreter_int8->arena_used_bytes();
+  MicroPrintf("Hello world int8 arena used: %u bytes (of %u available)",
+              arena_used, kTensorArenaSizeInt8);
 
   MicroPrintf("Int8 model initialized successfully!");
   return TFLM_OK;

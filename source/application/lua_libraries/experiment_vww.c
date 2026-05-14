@@ -7,7 +7,6 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <malloc.h>
 #include "experiment_common.h"
 #include "error_logging.h"
 #include "tflm_wrapper.h"
@@ -26,6 +25,46 @@
 extern uint8_t test_jpeg_data[];
 extern const size_t test_jpeg_size;
 #endif
+
+/* Image dimensions */
+#define CAPTURE_SIZE      720
+#define SCALED_SIZE       90    /* After TJpgDec scale=3 (720/8=90) */
+#define OUTPUT_SIZE       96    /* ML input size (96x96) */
+
+/* Buffer sizes */
+#define GRAY_TEMP_BYTES   (SCALED_SIZE * SCALED_SIZE)         /* 8100 */
+#define GRAY_INPUT_BYTES  (OUTPUT_SIZE * OUTPUT_SIZE)         /* 9216 */
+#define MAX_JPEG_SIZE     (25 * 1024)
+
+/* Static working buffers in BSS. Rationale (mirrors experiment_vww_rgb.c):
+ *   - Per-call malloc/free of buffers this large fragments the heap fast,
+ *     causing later allocations to fail mid-stream.
+ *   - Static placement is contiguous at link time, no allocator
+ *     involvement, no fragmentation.
+ *   - The two Lua entry points below are mutually exclusive (only one
+ *     runs at a time) so they share these buffers.
+ *   - JPEG cannot alias gray_buffer the way vww_rgb does (gray is only
+ *     9.2 KB; JPEG can be up to 25 KB), so three separate buffers. */
+static uint8_t s_jpeg_buffer[MAX_JPEG_SIZE];     /* 25 KB raw JPEG */
+static uint8_t s_temp_buffer[GRAY_TEMP_BYTES];   /* 8.1 KB decoded 90x90 */
+static uint8_t s_gray_buffer[GRAY_INPUT_BYTES];  /* 9 KB final 96x96 */
+
+/* Pure-inference benchmark constants and state.
+ *   - WARMUP discards the first inferences so caches/branch predictors settle.
+ *   - N is the number of timed inferences inside one cycle.
+ *   - K is the number of cycles; after each one the N timings are streamed
+ *     back over BLE before starting the next cycle. */
+#define BENCH_K       8
+#define BENCH_N       64
+#define BENCH_WARMUP  10
+
+/* Wire payload for one cycle: 4-byte LE cycle index followed by N raw
+ * DWT cycle counts (uint32 LE). Packed naturally - all members are
+ * uint32_t so sizeof == 4 + 4*BENCH_N == 1028 bytes, no padding. */
+static struct {
+    uint32_t cycle_idx;
+    uint32_t cycles[BENCH_N];
+} s_bench_payload;
 
 /*-----------------------------------------------*/
 /* Person Detection Overlay                      */
@@ -96,10 +135,6 @@ static void draw_person_detection_overlay(bool is_person, int8_t person_score)
  */
 static int lua_experiment_run_person_detection(lua_State *L)
 {
-    const uint16_t CAPTURE_SIZE = 720;
-    const uint16_t SCALED_SIZE = 90;       /* After TJpgDec scale=3 (720/8=90) */
-    const uint16_t OUTPUT_SIZE = 96;       /* ML input size (96x96) */
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
     const size_t CHUNK_SIZE = 200;
     const size_t READ_CHUNK_SIZE = 512;
 
@@ -113,24 +148,17 @@ static int lua_experiment_run_person_detection(lua_State *L)
         return 0;
     }
 
-    /* Allocate buffers */
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);  /* 90x90 = 8KB */
-    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 96x96 = 9KB */
-    if (!jpeg_buffer || !temp_buffer || !gray_buffer) {
-        if (jpeg_buffer) free(jpeg_buffer);
-        if (temp_buffer) free(temp_buffer);
-        if (gray_buffer) free(gray_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
+    /* Static buffers (see file-scope declarations). */
+    uint8_t *jpeg_buffer = s_jpeg_buffer;
+    uint8_t *temp_buffer = s_temp_buffer;
+    uint8_t *gray_buffer = s_gray_buffer;
+    (void)jpeg_buffer;  /* unused in DEV_KIT path */
 
-    memset(temp_buffer, 0, SCALED_SIZE * SCALED_SIZE);
-    memset(gray_buffer, 0, OUTPUT_SIZE * OUTPUT_SIZE);
+    memset(temp_buffer, 0, GRAY_TEMP_BYTES);
+    memset(gray_buffer, 0, GRAY_INPUT_BYTES);
 
 #ifdef DEV_KIT_BUILD
     /* DEV_KIT: Use hardcoded test JPEG data instead of camera */
-    free(jpeg_buffer);  /* Not needed for test path */
     LOG("DEV_KIT: Using hardcoded test JPEG data (%u bytes)", test_jpeg_size);
 
     /* Decode test JPEG to 90x90 grayscale */
@@ -140,8 +168,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
                                            &actual_width, &actual_height,
                                            3, false);  /* scale=3 (1/8), no rotation */
     if (result != 0) {
-        free(temp_buffer);
-        free(gray_buffer);
         luaL_error(L, "decode failed: %d", result);
         return 0;
     }
@@ -172,18 +198,12 @@ static int lua_experiment_run_person_detection(lua_State *L)
         lua_getfield(L, -1, "auto");
         if (!lua_isfunction(L, -1)) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "camera.auto not found");
             return 0;
         }
         lua_newtable(L);
         if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "camera.auto failed");
             return 0;
         }
@@ -198,9 +218,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
     lua_getfield(L, -1, "capture");
     if (!lua_isfunction(L, -1)) {
         lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(gray_buffer);
         luaL_error(L, "camera.capture not found");
         return 0;
     }
@@ -211,9 +228,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
     lua_setfield(L, -2, "quality");
     if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
         lua_pop(L, 3);
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(gray_buffer);
         luaL_error(L, "capture failed");
         return 0;
     }
@@ -228,9 +242,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
         lua_getfield(L, -1, "image_ready");
         if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "image_ready failed");
             return 0;
         }
@@ -243,9 +254,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
     }
 
     if (!ready) {
-        free(jpeg_buffer);
-        free(temp_buffer);
-        free(gray_buffer);
         luaL_error(L, "capture timeout");
         return 0;
     }
@@ -259,9 +267,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
         lua_pushinteger(L, READ_CHUNK_SIZE);
         if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "read failed");
             return 0;
         }
@@ -287,11 +292,8 @@ static int lua_experiment_run_person_detection(lua_State *L)
                                            temp_buffer, SCALED_SIZE, SCALED_SIZE,
                                            &actual_width, &actual_height,
                                            3, false);  /* scale=3 (1/8), no rotation */
-    free(jpeg_buffer);
 
     if (result != 0) {
-        free(temp_buffer);
-        free(gray_buffer);
         luaL_error(L, "decode failed: %d", result);
         return 0;
     }
@@ -331,7 +333,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
             }
         }
     }
-    free(temp_buffer);
 
     /* ===== Step 8: Run person detection inference ===== */
     reload_watchdog(NULL, NULL);
@@ -339,7 +340,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
 
     tflm_status_t infer_status = person_detect_infer(gray_buffer, output_scores);
     if (infer_status != TFLM_OK) {
-        free(gray_buffer);
         luaL_error(L, "Person detect inference failed");
         return 0;
     }
@@ -356,12 +356,11 @@ static int lua_experiment_run_person_detection(lua_State *L)
     reload_watchdog(NULL, NULL);
 
     /* ===== Step 10: Send image data via Bluetooth ===== */
-    size_t total_bytes = OUTPUT_SIZE * OUTPUT_SIZE;  /* 9216 */
+    size_t total_bytes = GRAY_INPUT_BYTES;  /* 9216 */
     size_t offset = 0;
 
     uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
     if (!chunk_buffer) {
-        free(gray_buffer);
         luaL_error(L, "chunk allocation failed");
         return 0;
     }
@@ -375,8 +374,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
         nrfx_systick_delay_ms(20);
         reload_watchdog(NULL, NULL);
     }
-
-    free(gray_buffer);
 
     /* ===== Step 11: Send separator ===== */
     nrfx_systick_delay_ms(50);
@@ -407,9 +404,6 @@ static int lua_experiment_run_person_detection(lua_State *L)
  */
 static int lua_experiment_run_person_detection_benchmark(lua_State *L)
 {
-    const uint16_t SCALED_SIZE = 90;       /* After TJpgDec scale=3 (720/8=90) */
-    const uint16_t OUTPUT_SIZE = 96;       /* ML input size (96x96) */
-
     uint16_t actual_width, actual_height;
     int result;
 
@@ -426,29 +420,15 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         return 0;
     }
 
-    /* Allocate buffers - reused across all iterations */
-    uint8_t *temp_buffer = malloc(SCALED_SIZE * SCALED_SIZE);  /* 90x90 = 8KB */
-    uint8_t *gray_buffer = malloc(OUTPUT_SIZE * OUTPUT_SIZE);  /* 96x96 = 9KB */
-    if (!temp_buffer || !gray_buffer) {
-        if (temp_buffer) free(temp_buffer);
-        if (gray_buffer) free(gray_buffer);
-        luaL_error(L, "allocation failed");
-        return 0;
-    }
+    /* Static buffers (see file-scope declarations). */
+    uint8_t *temp_buffer = s_temp_buffer;
+    uint8_t *gray_buffer = s_gray_buffer;
 
 #ifndef DEV_KIT_BUILD
-    const uint16_t CAPTURE_SIZE = 720;
-    const size_t MAX_JPEG_SIZE = 25 * 1024;
     const size_t READ_CHUNK_SIZE = 512;
     size_t jpeg_size = 0;
 
-    uint8_t *jpeg_buffer = malloc(MAX_JPEG_SIZE);
-    if (!jpeg_buffer) {
-        free(temp_buffer);
-        free(gray_buffer);
-        luaL_error(L, "JPEG allocation failed");
-        return 0;
-    }
+    uint8_t *jpeg_buffer = s_jpeg_buffer;
 
     /* ===== Initialize camera ONCE before benchmark loop ===== */
     lua_getglobal(L, "frame");
@@ -472,18 +452,12 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         lua_getfield(L, -1, "auto");
         if (!lua_isfunction(L, -1)) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "camera.auto not found");
             return 0;
         }
         lua_newtable(L);
         if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "camera.auto failed");
             return 0;
         }
@@ -520,8 +494,8 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
 
         /* Time: memset */
         t0 = DWT->CYCCNT;
-        memset(temp_buffer, 0, SCALED_SIZE * SCALED_SIZE);
-        memset(gray_buffer, 0, OUTPUT_SIZE * OUTPUT_SIZE);
+        memset(temp_buffer, 0, GRAY_TEMP_BYTES);
+        memset(gray_buffer, 0, GRAY_INPUT_BYTES);
         t1 = DWT->CYCCNT;
         time_memset += (t1 - t0);
 
@@ -534,8 +508,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
                                                &actual_width, &actual_height,
                                                3, false);  /* scale=3 (1/8), no rotation */
         if (result != 0) {
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "decode failed: %d", result);
             return 0;
         }
@@ -553,9 +525,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         lua_getfield(L, -1, "capture");
         if (!lua_isfunction(L, -1)) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "camera.capture not found");
             return 0;
         }
@@ -566,9 +535,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         lua_setfield(L, -2, "quality");
         if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
             lua_pop(L, 3);
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "capture failed");
             return 0;
         }
@@ -587,9 +553,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
             lua_getfield(L, -1, "image_ready");
             if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
                 lua_pop(L, 3);
-                free(jpeg_buffer);
-                free(temp_buffer);
-                free(gray_buffer);
                 luaL_error(L, "image_ready failed");
                 return 0;
             }
@@ -602,9 +565,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
         }
 
         if (!ready) {
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "capture timeout");
             return 0;
         }
@@ -622,9 +582,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
             lua_pushinteger(L, READ_CHUNK_SIZE);
             if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
                 lua_pop(L, 3);
-                free(jpeg_buffer);
-                free(temp_buffer);
-                free(gray_buffer);
                 luaL_error(L, "read failed");
                 return 0;
             }
@@ -653,9 +610,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
                                                &actual_width, &actual_height,
                                                3, false);  /* scale=3 (1/8), no rotation */
         if (result != 0) {
-            free(jpeg_buffer);
-            free(temp_buffer);
-            free(gray_buffer);
             luaL_error(L, "decode failed: %d", result);
             return 0;
         }
@@ -708,11 +662,6 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
 
         tflm_status_t infer_status = person_detect_infer(gray_buffer, output_scores);
         if (infer_status != TFLM_OK) {
-            free(temp_buffer);
-            free(gray_buffer);
-#ifndef DEV_KIT_BUILD
-            free(jpeg_buffer);
-#endif
             luaL_error(L, "Person detect inference failed");
             return 0;
         }
@@ -748,12 +697,7 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
     uint32_t total_ms = elapsed_cycles / 64000;  /* 64MHz = 64000 cycles/ms */
     uint32_t avg_ms = total_ms / (uint32_t)iterations;
 
-    /* Cleanup */
-    free(temp_buffer);
-    free(gray_buffer);
-#ifndef DEV_KIT_BUILD
-    free(jpeg_buffer);
-#endif
+    /* Static buffers - no free needed. */
 
     /* Convert timing to milliseconds */
     uint32_t memset_ms = time_memset / 64000;
@@ -803,6 +747,197 @@ static int lua_experiment_run_person_detection_benchmark(lua_State *L)
 }
 
 /*-----------------------------------------------*/
+/* Pure-inference benchmark                      */
+/*-----------------------------------------------*/
+
+/**
+ * Send one BLE packet, retrying on busy/not-connected. The benchmark
+ * runs for many minutes; a transient busy from the softdevice should
+ * not abort the whole run.
+ */
+static bool bench_send_with_retry(const uint8_t *data, size_t length)
+{
+    for (int attempt = 0; attempt < 50; attempt++) {
+        if (!bluetooth_send_data(data, length)) {
+            return true;
+        }
+        nrfx_systick_delay_ms(5);
+        reload_watchdog(NULL, NULL);
+    }
+    return false;
+}
+
+/**
+ * Pure-inference benchmark: tight loop over person_detect_infer().
+ *
+ *   - BENCH_WARMUP untimed inferences first to settle caches and the
+ *     branch predictor.
+ *   - Then BENCH_K cycles. Each cycle refills the input buffer with
+ *     fresh pseudo-random bytes and times BENCH_N back-to-back
+ *     inferences using the DWT cycle counter (64 MHz).
+ *   - After each cycle the BENCH_N raw cycle counts are streamed back
+ *     over BLE in 200-byte chunks, prefixed with a 4-byte LE cycle
+ *     index. Cycles are separated by 0x01 0xFE 0xFE on the wire and
+ *     the run terminates with 0x01 0xFF 0xFF 0x00 0x00.
+ *
+ * Lua: frame.experiment.run_inference_benchmark()
+ * Returns: total number of timed inferences (BENCH_K * BENCH_N).
+ */
+static int lua_experiment_run_inference_benchmark(lua_State *L)
+{
+    if (!person_detect_is_initialized()) {
+        luaL_error(L, "Person detect model not initialized");
+        return 0;
+    }
+    if (!bluetooth_is_connected()) {
+        luaL_error(L, "Bluetooth not connected");
+        return 0;
+    }
+
+    LOG("bench: start (K=%u, N=%u, warmup=%u, payload=%u B)",
+        (unsigned)BENCH_K, (unsigned)BENCH_N, (unsigned)BENCH_WARMUP,
+        (unsigned)sizeof(s_bench_payload));
+
+    /* Enable DWT cycle counter (same sequence as the existing pipeline
+     * benchmark above). */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    /* Different seed per invocation so successive runs don't see the
+     * exact same input distribution. */
+    srand((unsigned int)DWT->CYCCNT);
+
+    uint8_t *input = s_gray_buffer;
+    int8_t output_scores[PERSON_OUTPUT_SIZE];
+
+    /* One-time warmup. */
+    for (size_t i = 0; i < PERSON_INPUT_SIZE; i++) {
+        input[i] = (uint8_t)(rand() & 0xFF);
+    }
+    for (int w = 0; w < BENCH_WARMUP; w++) {
+        if (person_detect_infer(input, output_scores) != TFLM_OK) {
+            luaL_error(L, "warmup inference failed");
+            return 0;
+        }
+        reload_watchdog(NULL, NULL);
+    }
+    LOG("bench: warmup done");
+
+    /* BLE pacing constants. Inference bursts are long (seconds), then we
+     * dump a few hundred bytes back-to-back. The softdevice notification
+     * queue is shallow, so we leave a settle delay BEFORE the first
+     * chunk of each cycle to let any pending TX_COMPLETE events drain,
+     * then a generous inter-chunk delay. The 20 ms gap the existing
+     * image-streaming code uses is too tight after a long silence. */
+    const size_t CHUNK_SIZE = 100;
+    const uint32_t SETTLE_MS = 250;
+    const uint32_t CHUNK_DELAY_MS = 100;
+    uint8_t chunk_buffer[CHUNK_SIZE + 1];
+    chunk_buffer[0] = 0x01;  /* data flag */
+
+    for (uint32_t k = 0; k < BENCH_K; k++) {
+        /* Fresh random buffer for this cycle, kept stable through the
+         * inner loop. Same buffer for all BENCH_N inferences. */
+        for (size_t i = 0; i < PERSON_INPUT_SIZE; i++) {
+            input[i] = (uint8_t)(rand() & 0xFF);
+        }
+        reload_watchdog(NULL, NULL);
+
+        s_bench_payload.cycle_idx = k;
+
+        /* Tight inference loop - this is what the benchmark measures.
+         * Keep the loop body free of LOG / BLE / anything that might
+         * touch the softdevice. */
+        for (uint32_t i = 0; i < BENCH_N; i++) {
+            uint32_t t0 = DWT->CYCCNT;
+            tflm_status_t st = person_detect_infer(input, output_scores);
+            uint32_t t1 = DWT->CYCCNT;
+            if (st != TFLM_OK) {
+                luaL_error(L, "inference failed at k=%u i=%u",
+                           (unsigned)k, (unsigned)i);
+                return 0;
+            }
+            /* uint32 wrap is fine: a single inference is far below 2^32
+             * cycles (~67 s @ 64 MHz). */
+            s_bench_payload.cycles[i] = t1 - t0;
+            reload_watchdog(NULL, NULL);
+        }
+
+        LOG("bench: cycle %u inferences done; first=%u last=%u",
+            (unsigned)k,
+            (unsigned)s_bench_payload.cycles[0],
+            (unsigned)s_bench_payload.cycles[BENCH_N - 1]);
+
+        /* Let any TX_COMPLETE backlog drain before bursting the payload. */
+        nrfx_systick_delay_ms(SETTLE_MS);
+        reload_watchdog(NULL, NULL);
+
+        /* Sacrificial "wake" notification. We've observed (RTT+host)
+         * that the very first BLE notification after a long inference
+         * silence is silently dropped at the link layer - the firmware
+         * thinks it sent it (sd_ble_gatts_hvx returns NRF_SUCCESS) but
+         * the host never sees it. Burning a 4-byte wake here means the
+         * dropped slot is something we don't care about. The host
+         * parser ignores 4-byte 0xAA 0xAA 0xAA 0xAA packets. */
+        const uint8_t wake[5] = {0x01, 0xAA, 0xAA, 0xAA, 0xAA};
+        (void)bench_send_with_retry(wake, 5);
+        nrfx_systick_delay_ms(CHUNK_DELAY_MS);
+        reload_watchdog(NULL, NULL);
+
+        /* Stream this cycle's payload (4-byte LE index + BENCH_N x
+         * uint32 LE cycle counts) in CHUNK_SIZE chunks. */
+        const uint8_t *payload = (const uint8_t *)&s_bench_payload;
+        size_t total = sizeof(s_bench_payload);
+        size_t offset = 0;
+        unsigned chunk_idx = 0;
+        while (offset < total) {
+            size_t chunk = (total - offset > CHUNK_SIZE)
+                              ? CHUNK_SIZE
+                              : (total - offset);
+            chunk_buffer[0] = 0x01;
+            memcpy(chunk_buffer + 1, payload + offset, chunk);
+            if (!bench_send_with_retry(chunk_buffer, chunk + 1)) {
+                luaL_error(L, "BLE send failed at cycle %u chunk %u",
+                           (unsigned)k, chunk_idx);
+                return 0;
+            }
+            LOG("bench: cycle %u chunk %u sent (%u B, offset %u/%u)",
+                (unsigned)k, chunk_idx, (unsigned)chunk,
+                (unsigned)(offset + chunk), (unsigned)total);
+            offset += chunk;
+            chunk_idx++;
+            nrfx_systick_delay_ms(CHUNK_DELAY_MS);
+            reload_watchdog(NULL, NULL);
+        }
+
+        /* Cycle separator (arrives host-side as a 2-byte packet
+         * 0xFE 0xFE - the data flag is stripped by frameutils). */
+        nrfx_systick_delay_ms(CHUNK_DELAY_MS);
+        const uint8_t separator[3] = {0x01, 0xFE, 0xFE};
+        if (!bench_send_with_retry(separator, 3)) {
+            luaL_error(L, "BLE separator failed at cycle %u", (unsigned)k);
+            return 0;
+        }
+        LOG("bench: cycle %u/%u separator sent",
+            (unsigned)(k + 1), (unsigned)BENCH_K);
+    }
+
+    /* End marker (host-side: 4-byte packet 0xFF 0xFF 0x00 0x00). */
+    nrfx_systick_delay_ms(SETTLE_MS);
+    const uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+    if (!bench_send_with_retry(end_marker, 5)) {
+        luaL_error(L, "BLE end marker failed");
+        return 0;
+    }
+    LOG("bench: end marker sent, %u inferences total",
+        (unsigned)(BENCH_K * BENCH_N));
+
+    lua_pushinteger(L, (lua_Integer)(BENCH_K * BENCH_N));
+    return 1;
+}
+
+/*-----------------------------------------------*/
 /* Experiment Interface Implementation           */
 /*-----------------------------------------------*/
 
@@ -820,4 +955,7 @@ void experiment_register_lua_functions(lua_State *L, int experiment_table)
 
     lua_pushcfunction(L, lua_experiment_run_person_detection_benchmark);
     lua_setfield(L, -2, "run_person_detection_benchmark");
+
+    lua_pushcfunction(L, lua_experiment_run_inference_benchmark);
+    lua_setfield(L, -2, "run_inference_benchmark");
 }
