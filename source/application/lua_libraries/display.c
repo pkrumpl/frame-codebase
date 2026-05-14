@@ -280,6 +280,53 @@ static int lua_display_bitmap(lua_State *L)
     return 0;
 }
 
+/* Rendered pixel width of a UTF-8 string using the system font and the
+ * default 4-px character spacing (the same default lua_display_text uses).
+ * Glyphs whose codepoint isn't in the font are skipped (matching the draw
+ * path's behavior). Trailing inter-character spacing is NOT included so
+ * the value represents the visible bounding-box width.
+ *
+ * Exposed for centering by other C modules (e.g. the VWW overlay). Not
+ * registered as a Lua function. */
+uint16_t display_text_pixel_width(const char *string)
+{
+    if (string == NULL)
+    {
+        return 0;
+    }
+
+    const uint16_t character_spacing = 4;
+    uint16_t total = 0;
+    uint16_t glyph_count = 0;
+
+    for (size_t index = 0; index < strlen(string);)
+    {
+        uint32_t codepoint = utf8_decode(string, &index);
+        if (codepoint == 0)
+        {
+            continue;
+        }
+
+        for (size_t entry = 0;
+             entry < sizeof(sprite_metadata) / sizeof(sprite_metadata_t);
+             entry++)
+        {
+            if (codepoint == sprite_metadata[entry].utf8_codepoint)
+            {
+                total += sprite_metadata[entry].width;
+                glyph_count++;
+                break;
+            }
+        }
+    }
+
+    if (glyph_count > 1)
+    {
+        total += (uint16_t)((glyph_count - 1) * character_spacing);
+    }
+    return total;
+}
+
 static int lua_display_text(lua_State *L)
 {
     const char *string = luaL_checkstring(L, 1);

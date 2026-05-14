@@ -113,6 +113,11 @@ static struct {
  * when the SoftDevice's send queue is saturated. */
 static bool bench_send_with_retry(const uint8_t *data, size_t length);
 
+/* Forward decl: rendered pixel width of a system-font string. Defined in
+ * display.c. Used by draw_person_detection_overlay to center the result
+ * text horizontally on the display. */
+extern uint16_t display_text_pixel_width(const char *string);
+
 /*-----------------------------------------------*/
 /* Person Detection Overlay                      */
 /*-----------------------------------------------*/
@@ -145,12 +150,14 @@ static void draw_person_detection_overlay(lua_State *L,
              is_person ? "PERSON  %d%%" : "NO PERSON  %d%%",
              conf);
 
-    /* Fixed anchor near the bottom of the 640x400 display. The system-font
-     * glyphs are 48 px tall, so y_position + 48 must stay <= 400 — otherwise
-     * frame.display.text silently drops the glyph (display.c:335). Adjust
-     * text_x here if the demo looks off-center. */
-    const lua_Integer text_x = 220;
-    const lua_Integer text_y = 345;
+    /* Center the result text on the 640x400 display. System-font glyphs are
+     * 48 px tall, so y = (400 - 48) / 2 = 176 puts the glyph row vertically
+     * centered. The horizontal anchor is computed from the rendered width
+     * so 'PERSON 92%' and 'NO PERSON 73%' both look centered. */
+    uint16_t text_w = display_text_pixel_width(buf);
+    lua_Integer text_x = (640 - (lua_Integer)text_w) / 2;
+    if (text_x < 1) text_x = 1;  /* frame.display uses 1-based coordinates */
+    const lua_Integer text_y = 176;
     const char *color_name = is_person ? "GREEN" : "RED";
 
     /* frame.display.text(buf, text_x, text_y, {color = color_name}) */
@@ -182,6 +189,55 @@ static void draw_person_detection_overlay(lua_State *L,
 /* Person Detection Lua Functions                */
 /*-----------------------------------------------*/
 
+#ifndef DEV_KIT_BUILD
+/* Wake the camera (frame.camera.power_save(false)) and run 5 autoexposure
+ * cycles. delay_ms is the spacing between cycles — 100 ms for the existing
+ * host-driven slow path (preserves prior timing), 1000 ms for the on-device
+ * demo so the "Calibrating..." screen stays visible long enough to read.
+ *
+ * frame.camera.auto is called with an empty options table, so AE uses its
+ * own defaults (exposure=0.1, analog_gain_limit=16). The host-driven BLE
+ * demo tunes these from Python via run_calibration. */
+static void do_wake_and_autoexpose(lua_State *L, uint32_t delay_ms)
+{
+    /* Wake camera. */
+    lua_getglobal(L, "frame");
+    lua_getfield(L, -1, "camera");
+    lua_getfield(L, -1, "power_save");
+    if (lua_isfunction(L, -1)) {
+        lua_pushboolean(L, 0);  /* power_save(false) */
+        if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+            lua_pop(L, 3);
+        }
+    } else {
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 2);
+    nrfx_systick_delay_ms(100);
+
+    /* 5x camera.auto({}) — use AE defaults. */
+    for (int i = 0; i < 5; i++) {
+        lua_getglobal(L, "frame");
+        lua_getfield(L, -1, "camera");
+        lua_getfield(L, -1, "auto");
+        if (!lua_isfunction(L, -1)) {
+            lua_pop(L, 3);
+            luaL_error(L, "camera.auto not found");
+            return;
+        }
+        lua_newtable(L);
+        if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+            lua_pop(L, 3);
+            luaL_error(L, "camera.auto failed");
+            return;
+        }
+        lua_pop(L, 3);
+        nrfx_systick_delay_ms(delay_ms);
+        reload_watchdog(NULL, NULL);
+    }
+}
+#endif /* !DEV_KIT_BUILD */
+
 /**
  * Run person detection on camera image using RGB model.
  *
@@ -191,16 +247,22 @@ static void draw_person_detection_overlay(lua_State *L,
  * false, the slow path runs both initialization steps. DEV_KIT builds
  * ignore this flag because they don't touch the camera.
  *
+ * If `skip_ble_tx` is true, the image + scores are NOT streamed over BLE
+ * after inference. Used by the on-device tap-triggered demo where no host
+ * is listening; saves ~3 s of BLE traffic per frame.
+ *
  * Image pipeline: 720x720 JPEG -> scale=3 (90x90 RGB) -> upscale to 96x96 RGB
  * Output: Display PERSON (green) or NO PERSON (red) overlay
  *
- * Protocol:
+ * Protocol (when skip_ble_tx is false):
  *   [IMAGE DATA]     27648 bytes (96x96x3 RGB)
  *   [SEPARATOR]      0x01 0xFE 0xFE
  *   [PREDICTIONS]    2 bytes (not_person_score, person_score)
  *   [END MARKER]     0x01 0xFF 0xFF 0x00 0x00
  */
-static int run_person_detection_body(lua_State *L, bool skip_camera_init)
+static int run_person_detection_body(lua_State *L,
+                                     bool skip_camera_init,
+                                     bool skip_ble_tx)
 {
     /* Max JPEG size == RGB_OUTPUT_BYTES because the JPEG is read into
      * s_rgb_buffer (which is unused until upscale). 27,648 B is above
@@ -250,41 +312,8 @@ static int run_person_detection_body(lua_State *L, bool skip_camera_init)
     memset(jpeg_buffer, 0, MAX_JPEG_SIZE);
 
     if (!skip_camera_init) {
-        /* ===== Step 1: Wake up camera ===== */
-        lua_getglobal(L, "frame");
-        lua_getfield(L, -1, "camera");
-        lua_getfield(L, -1, "power_save");
-        if (lua_isfunction(L, -1)) {
-            lua_pushboolean(L, 0);  /* power_save(false) */
-            if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-                lua_pop(L, 3);
-            }
-        } else {
-            lua_pop(L, 1);
-        }
-        lua_pop(L, 2);
-        nrfx_systick_delay_ms(100);
-
-        /* ===== Step 2: Auto-adjust camera (5 iterations) ===== */
-        for (int i = 0; i < 5; i++) {
-            lua_getglobal(L, "frame");
-            lua_getfield(L, -1, "camera");
-            lua_getfield(L, -1, "auto");
-            if (!lua_isfunction(L, -1)) {
-                lua_pop(L, 3);
-                luaL_error(L, "camera.auto not found");
-                return 0;
-            }
-            lua_newtable(L);
-            if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
-                lua_pop(L, 3);
-                luaL_error(L, "camera.auto failed");
-                return 0;
-            }
-            lua_pop(L, 3);
-            nrfx_systick_delay_ms(100);
-            reload_watchdog(NULL, NULL);
-        }
+        /* Steps 1-2: wake + 5x autoexposure, 100 ms between cycles. */
+        do_wake_and_autoexpose(L, 100);
     }
 
     /* ===== Step 3: Capture image ===== */
@@ -404,64 +433,141 @@ static int run_person_detection_body(lua_State *L, bool skip_camera_init)
     draw_person_detection_overlay(L, is_person, person_score, not_person_score);
     reload_watchdog(NULL, NULL);
 
-    /* ===== Step 10: Send RGB image data via Bluetooth ===== */
     size_t total_bytes = RGB_OUTPUT_BYTES;  /* 27648 */
-    size_t offset = 0;
 
-    uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
-    if (!chunk_buffer) {
-        luaL_error(L, "chunk allocation failed");
-        return 0;
+    if (!skip_ble_tx) {
+        /* ===== Step 10: Send RGB image data via Bluetooth ===== */
+        size_t offset = 0;
+
+        uint8_t *chunk_buffer = malloc(CHUNK_SIZE + 1);
+        if (!chunk_buffer) {
+            luaL_error(L, "chunk allocation failed");
+            return 0;
+        }
+        chunk_buffer[0] = 0x01;  /* Data flag */
+
+        /* bench_send_with_retry retries when sd_ble_gatts_hvx returns
+         * NRF_ERROR_RESOURCES (BLE TX queue full). A bare bluetooth_send_data()
+         * would silently drop the chunk. With per-frame autoexposure removed,
+         * frames stream back-to-back and the queue saturates without retry. */
+        while (offset < total_bytes) {
+            size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
+            memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
+            (void)bench_send_with_retry(chunk_buffer, chunk + 1);
+            offset += chunk;
+            nrfx_systick_delay_ms(20);
+            reload_watchdog(NULL, NULL);
+        }
+
+        /* ===== Step 11: Send separator ===== */
+        nrfx_systick_delay_ms(50);
+        uint8_t separator[3] = {0x01, 0xFE, 0xFE};
+        (void)bench_send_with_retry(separator, 3);
+
+        /* ===== Step 12: Send predictions (2 bytes) ===== */
+        nrfx_systick_delay_ms(50);
+        chunk_buffer[0] = 0x01;
+        memcpy(chunk_buffer + 1, output_scores, PERSON_OUTPUT_SIZE);
+        (void)bench_send_with_retry(chunk_buffer, PERSON_OUTPUT_SIZE + 1);
+
+        /* ===== Step 13: Send end marker ===== */
+        nrfx_systick_delay_ms(100);
+        uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
+        (void)bench_send_with_retry(end_marker, 5);
+
+        free(chunk_buffer);
     }
-    chunk_buffer[0] = 0x01;  /* Data flag */
-
-    /* bench_send_with_retry retries when sd_ble_gatts_hvx returns
-     * NRF_ERROR_RESOURCES (BLE TX queue full). A bare bluetooth_send_data()
-     * would silently drop the chunk. With per-frame autoexposure removed,
-     * frames stream back-to-back and the queue saturates without retry. */
-    while (offset < total_bytes) {
-        size_t chunk = (total_bytes - offset > CHUNK_SIZE) ? CHUNK_SIZE : (total_bytes - offset);
-        memcpy(chunk_buffer + 1, rgb_buffer + offset, chunk);
-        (void)bench_send_with_retry(chunk_buffer, chunk + 1);
-        offset += chunk;
-        nrfx_systick_delay_ms(20);
-        reload_watchdog(NULL, NULL);
-    }
-
-    /* ===== Step 11: Send separator ===== */
-    nrfx_systick_delay_ms(50);
-    uint8_t separator[3] = {0x01, 0xFE, 0xFE};
-    (void)bench_send_with_retry(separator, 3);
-
-    /* ===== Step 12: Send predictions (2 bytes) ===== */
-    nrfx_systick_delay_ms(50);
-    chunk_buffer[0] = 0x01;
-    memcpy(chunk_buffer + 1, output_scores, PERSON_OUTPUT_SIZE);
-    (void)bench_send_with_retry(chunk_buffer, PERSON_OUTPUT_SIZE + 1);
-
-    /* ===== Step 13: Send end marker ===== */
-    nrfx_systick_delay_ms(100);
-    uint8_t end_marker[5] = {0x01, 0xFF, 0xFF, 0x00, 0x00};
-    (void)bench_send_with_retry(end_marker, 5);
-
-    free(chunk_buffer);
 
     lua_pushinteger(L, total_bytes + PERSON_OUTPUT_SIZE);
     return 1;
 }
 
-/* Lua entry: full slow path (wakes camera + 5x autoexposure + detect). */
+/* Lua entry: full slow path (wakes camera + 5x autoexposure + detect),
+ * streams over BLE. Used when a host is driving the demo. */
 static int lua_experiment_run_person_detection(lua_State *L)
 {
-    return run_person_detection_body(L, false);
+    return run_person_detection_body(L,
+                                     /* skip_camera_init */ false,
+                                     /* skip_ble_tx     */ false);
 }
 
-/* Lua entry: fast path that skips wake + autoexposure. The host must have
- * already powered the camera on and driven autoexposure (typically via the
- * demo calibration phase). Used for steady-state streaming. */
+/* Lua entry: fast path that skips wake + autoexposure but still streams
+ * over BLE. The host must have already powered the camera on and driven
+ * autoexposure (typically via the demo calibration phase). Used for
+ * steady-state host-driven streaming. */
 static int lua_experiment_run_person_detection_fast(lua_State *L)
 {
-    return run_person_detection_body(L, true);
+    return run_person_detection_body(L,
+                                     /* skip_camera_init */ true,
+                                     /* skip_ble_tx     */ false);
+}
+
+/* Number of detection iterations the on-device tap-triggered demo runs
+ * between the calibration screen and the return to the pairing screen. */
+#define VWW_DEMO_ITERATIONS 30
+
+/* Lua entry: fully on-device demo. Triggered by a double-tap when the
+ * tap handler in luaport.c sees that this build defines the function.
+ *
+ * Flow:
+ *   1. Draw the ELSS logo (U+F0011) + "Calibrating..." on the display.
+ *   2. Wake the camera + run 5x autoexposure with 1 s spacing so the
+ *      calibration screen stays visible.
+ *   3. Run VWW_DEMO_ITERATIONS detections; each draws the centered
+ *      result text on the display. BLE TX is skipped (no host expected).
+ *   4. Restore the standard "Frame is Paired" screen.
+ *   5. Power the camera back down.
+ */
+static int lua_experiment_run_vww_demo(lua_State *L)
+{
+#ifdef DEV_KIT_BUILD
+    /* No camera path on the dev kit; nothing useful to do. */
+    (void)L;
+    return 0;
+#else
+    /* 1. Calibration screen. The ELSS logo UTF-8 is F3 B0 80 91. */
+    (void)luaL_dostring(L,
+        "frame.display.text('\xF3\xB0\x80\x91', 102, 130, {color='WHITE'});"
+        "frame.display.text('Calibrating...', 240, 290, {color='WHITE'});"
+        "frame.display.show()");
+
+    /* 2. Wake + autoexposure with the slower demo cadence so the logo
+     *    is on screen for ~5 s before detections start. */
+    do_wake_and_autoexpose(L, 1000);
+
+    /* 3. N detections, on-device only (no BLE TX). */
+    for (int i = 0; i < VWW_DEMO_ITERATIONS; i++) {
+        run_person_detection_body(L,
+                                  /* skip_camera_init */ true,
+                                  /* skip_ble_tx     */ true);
+        /* The body pushes one int return value; drop it so the stack
+         * stays balanced across iterations. */
+        lua_pop(L, 1);
+        reload_watchdog(NULL, NULL);
+    }
+
+    /* The last detection's show() triggers a sequential back-buffer
+     * clear in the FPGA (display_buffers.sv:165, ~512000 cycles). If we
+     * start writing the pairing screen immediately, our draws race the
+     * clear sweep: some pixels get erased, and addresses the sweep
+     * hasn't reached yet still hold the previous frame's content.
+     * Wait long enough for the clear to finish before drawing. */
+    nrfx_systick_delay_ms(50);
+
+    /* 4. Restore the standard pairing screen (mirrors
+     *    luaport.c:show_pairing_screen for the paired case). */
+    (void)luaL_dostring(L,
+        "frame.display.text('Frame is Paired', 185, 140);"
+        "frame.display.text("
+        "'Frame '..frame.bluetooth.address():sub(-2, -1), "
+        "245, 210, {color='ORANGE'});"
+        "frame.display.show()");
+
+    /* 5. Camera back to sleep. */
+    (void)luaL_dostring(L, "frame.camera.power_save(true)");
+
+    return 0;
+#endif
 }
 
 /* bench_send_with_retry forward-declared near the top of the file. */
@@ -1053,6 +1159,9 @@ void experiment_register_lua_functions(lua_State *L, int experiment_table)
 
     lua_pushcfunction(L, lua_experiment_run_person_detection_fast);
     lua_setfield(L, -2, "run_person_detection_fast");
+
+    lua_pushcfunction(L, lua_experiment_run_vww_demo);
+    lua_setfield(L, -2, "run_vww_demo");
 
     lua_pushcfunction(L, lua_experiment_run_person_detection_benchmark);
     lua_setfield(L, -2, "run_person_detection_benchmark");

@@ -79,6 +79,18 @@ def print_handler(s: str):
 # stays ASCII over BLE.
 ELSS_LOGO_LUA_LITERAL = r"'\xF3\xB0\x80\x91'"
 
+# Autoexposure tuning for `frame.camera.auto` (see camera.c:556-670).
+# Interpolated into the Lua call in `run_calibration`.
+#
+#   key                range     default  indoor     outdoor
+#   exposure           0.0-1.0   0.1      0.20-0.30  0.10-0.15
+#   analog_gain_limit  1-248     16       32-64      16-24
+#
+# Higher exposure -> brighter target, risk of blown highlights.
+# Higher analog_gain_limit -> brighter dim scenes, more sensor noise.
+AUTOEXP_EXPOSURE = 0.15
+AUTOEXP_ANALOG_GAIN_LIMIT = 16
+
 
 async def run_calibration(b: Bluetooth) -> None:
     """Draw the ELSS logo + 'Calibrating...' on the Frame display, then run
@@ -110,9 +122,17 @@ async def run_calibration(b: Bluetooth) -> None:
     await b.send_lua("frame.camera.power_save(false)")
     await asyncio.sleep(0.2)
 
-    print("Running autoexposure (5 iterations)...")
+    print(
+        f"Running autoexposure (5 iterations, "
+        f"exposure={AUTOEXP_EXPOSURE}, "
+        f"analog_gain_limit={AUTOEXP_ANALOG_GAIN_LIMIT})..."
+    )
+    auto_args = (
+        f"{{exposure={AUTOEXP_EXPOSURE}, "
+        f"analog_gain_limit={AUTOEXP_ANALOG_GAIN_LIMIT}}}"
+    )
     for i in range(5):
-        await b.send_lua("frame.camera.auto({})")
+        await b.send_lua(f"frame.camera.auto({auto_args})")
         await asyncio.sleep(1)
         print(f"  Autoexposure {i + 1}/5")
 
