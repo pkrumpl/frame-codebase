@@ -7,4 +7,4 @@ USE_CMSIS_NN = 1
 
 # Hardware watchdog reload window in milliseconds. Must exceed the
 # longest single TFLM Invoke() call.
-WATCHDOG_TIMEOUT_MS = 60000
+WATCHDOG_TIMEOUT_MS = 6000
